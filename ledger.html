@@ -1,0 +1,2516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Ledger — Personal Finance Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #EDEBE3; }
+  body { font-family: 'Inter', sans-serif; color: #22303F; }
+  .mono { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+  .serif { font-family: 'Source Serif 4', serif; }
+  .ledger-input {
+    background: #F6F4EE; border: 1px solid #C9C2B2; border-radius: 6px;
+    padding: 8px 10px; font-family: 'Inter', sans-serif; font-size: 13px; color: #22303F;
+    outline: none; width: 100%;
+  }
+  .ledger-input:focus { border-color: #2F6F5E; box-shadow: 0 0 0 3px rgba(47,111,94,0.12); }
+  .chip {
+    border: 1px solid #C9C2B2; background: #F6F4EE; border-radius: 999px;
+    padding: 5px 12px; font-size: 12px; cursor: pointer; display: inline-flex;
+    align-items: center; gap: 5px; transition: all 0.15s; color: #22303F;
+  }
+  .chip:hover { border-color: #2F6F5E; }
+  .chip.active { background: #22303F; color: #EDEBE3; border-color: #22303F; }
+  .row-hover:hover { background: #F6F4EE; }
+  .donut-legend-row.clickable { cursor: pointer; }
+  .donut-legend-row.clickable:hover { background: #22303F14; }
+  .hero-stat-clickable { cursor: pointer; transition: filter 0.12s; }
+  .hero-stat-clickable:hover { filter: brightness(1.3); }
+  .stat-card-clickable { cursor: pointer; transition: filter 0.12s; }
+  .stat-card-clickable:hover { filter: brightness(0.97); }
+  .perforation {
+    background-image: radial-gradient(circle, #EDEBE3 3px, transparent 3.5px);
+    background-size: 14px 14px; background-position: 0 0; height: 8px;
+  }
+  ::-webkit-scrollbar { height: 8px; width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #C9C2B2; border-radius: 4px; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .spin { display: inline-block; animation: spin 1s linear infinite; }
+
+  @media (max-width: 860px) {
+    .app-sidebar {
+      position: fixed !important; top: auto !important; bottom: 0 !important; left: 0; right: 0;
+      width: 100% !important; height: auto !important; min-height: 0 !important;
+      display: flex !important; flex-direction: row !important; justify-content: space-around;
+      padding: 6px 4px !important; overflow-y: visible !important; z-index: 400;
+      border-top: 1px solid rgba(255,255,255,0.12);
+    }
+    .app-sidebar .sidebar-title { display: none; }
+    .app-sidebar .sidebar-item {
+      flex-direction: column !important; align-items: center !important; justify-content: center !important;
+      gap: 2px !important; padding: 6px 4px !important; font-size: 10px !important; width: auto !important;
+      flex: 1 1 0; margin-bottom: 0 !important; text-align: center !important;
+    }
+    .app-sidebar .sidebar-item-icon { font-size: 16px; }
+    .app-main { padding-bottom: 62px; }
+    .content-row { flex-direction: column !important; }
+    .insights-panel { width: 100% !important; position: static !important; }
+    .back-to-top-btn { bottom: 76px !important; }
+  }
+  @media (max-width: 520px) {
+    .hide-on-small { display: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="padding:60px;text-align:center;color:#7A7365;font-family:sans-serif;">Loading…</div>
+</div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+// ---------- local storage shim (data stays only in this browser) ----------
+const storage = {
+  async get(key) {
+    const v = localStorage.getItem(key);
+    if (v == null) throw new Error("not found");
+    return { key, value: v };
+  },
+  async set(key, value) {
+    localStorage.setItem(key, value);
+    return { key, value };
+  },
+};
+const STORAGE_KEY = "ledger:transactions";
+const RATES_KEY = "ledger:manualRates";
+const QUICKPICKS_KEY = "ledger:quickPicks";
+const MERCHANT_CATEGORIES_KEY = "ledger:merchantCategories";
+
+// ---------- tiny inline icons ----------
+const Icon = ({ children, size = 14, style }) => (
+  <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: size, lineHeight: 1, ...style }}>{children}</span>
+);
+const I = {
+  Upload: (p) => <Icon {...p}>⭱</Icon>,
+  Search: (p) => <Icon {...p}>⌕</Icon>,
+  Trash: (p) => <Icon {...p}>🗑</Icon>,
+  X: (p) => <Icon {...p}>✕</Icon>,
+  Up: (p) => <Icon {...p}>↑</Icon>,
+  Down: (p) => <Icon {...p}>↓</Icon>,
+  Wallet: (p) => <Icon {...p}>◆</Icon>,
+  Filter: (p) => <Icon {...p}>▾</Icon>,
+  Download: (p) => <Icon {...p}>⭳</Icon>,
+  Chevron: (p) => <Icon {...p}>▾</Icon>,
+  Tag: (p) => <Icon {...p}>#</Icon>,
+  Alert: (p) => <Icon {...p}>!</Icon>,
+  Check: (p) => <Icon {...p}>✓</Icon>,
+  Card: (p) => <Icon {...p}>▤</Icon>,
+  Repeat: (p) => <Icon {...p}>↻</Icon>,
+  Grid: (p) => <Icon {...p}>◧</Icon>,
+  Star: (p) => <Icon {...p}>★</Icon>,
+  Back: (p) => <Icon {...p}>←</Icon>,
+  Folder: (p) => <Icon {...p}>▣</Icon>,
+  Chart: (p) => <Icon {...p}>📊</Icon>,
+  Calendar: (p) => <Icon {...p}>📅</Icon>,
+};
+
+const CATEGORY_PALETTE = [
+  "#2F6F5E", "#A6432F", "#C98A3E", "#3F5A73", "#7A5A8C",
+  "#6B7A3F", "#8C4B5A", "#4B7A8C", "#8C6B3F", "#5A5A8C"
+];
+
+// ---------- card reward catalog ----------
+const CARD_CATALOG = [
+  {
+    id: "chase-freedom-flex", name: "Chase Freedom Flex", issuer: "Chase", network: "Mastercard",
+    colorFrom: "#175A8C", colorTo: "#0A2E4A", rewardType: "cashback", baseRate: 1,
+    rates: [
+      { key: "dining", label: "Dining", rate: 3 },
+      { key: "drugstore", label: "Drugstores", rate: 3 },
+      { key: "travel", label: "Chase Travel purchases", rate: 5 },
+    ],
+    note: "Plus a 5% rotating category each quarter (activate at chase.com, up to $1,500/quarter combined) — not reflected in this estimate.",
+  },
+  {
+    id: "chase-freedom-unlimited", name: "Chase Freedom Unlimited", issuer: "Chase", network: "Visa",
+    colorFrom: "#1D6DA6", colorTo: "#0D3A57", rewardType: "cashback", baseRate: 1.5,
+    rates: [
+      { key: "dining", label: "Dining", rate: 3 },
+      { key: "drugstore", label: "Drugstores", rate: 3 },
+      { key: "travel", label: "Chase Travel purchases", rate: 5 },
+    ],
+  },
+  {
+    id: "chase-sapphire-preferred", name: "Chase Sapphire Preferred", issuer: "Chase", network: "Visa",
+    colorFrom: "#12283F", colorTo: "#03101C", rewardType: "points", pointValueCents: 2.05, baseRate: 1,
+    rates: [
+      { key: "dining", label: "Dining", rate: 3 },
+      { key: "grocery", label: "Grocery stores", rate: 3 },
+      { key: "travel", label: "Travel", rate: 2 },
+    ],
+    note: "Ultimate Rewards points. 5x on travel booked through Chase Travel isn't reflected — CSVs don't show where travel was booked. Value estimated at ~2.05¢/point.",
+  },
+  {
+    id: "discover-it", name: "Discover it Cash Back", issuer: "Discover", network: "Discover",
+    colorFrom: "#FF7A1A", colorTo: "#D14E00", rewardType: "cashback", baseRate: 1,
+    rates: [],
+    note: "5% cash back on rotating quarterly categories (activate at discover.com, up to $1,500/quarter) isn't reflected — only the 1% base rate is estimated here.",
+  },
+  {
+    id: "citi-double-cash", name: "Citi Double Cash", issuer: "Citi", network: "Mastercard",
+    colorFrom: "#003D79", colorTo: "#001F3F", rewardType: "cashback", baseRate: 2, rates: [],
+  },
+  {
+    id: "amex-blue-cash-preferred", name: "Amex Blue Cash Preferred", issuer: "American Express", network: "American Express",
+    colorFrom: "#1C7ED6", colorTo: "#0B4C8C", rewardType: "cashback", baseRate: 1,
+    rates: [
+      { key: "grocery", label: "U.S. supermarkets", rate: 6 },
+      { key: "streaming", label: "Select streaming", rate: 6 },
+      { key: "gas", label: "Gas stations", rate: 3 },
+      { key: "transit", label: "Transit", rate: 3 },
+    ],
+    note: "6% grocery and streaming rates apply up to $6,000/year combined, then drop to 1%.",
+  },
+  {
+    id: "amex-blue-cash-everyday", name: "Amex Blue Cash Everyday", issuer: "American Express", network: "American Express",
+    colorFrom: "#2E9CCA", colorTo: "#155E80", rewardType: "cashback", baseRate: 1,
+    rates: [
+      { key: "grocery", label: "U.S. supermarkets", rate: 3 },
+      { key: "gas", label: "Gas stations", rate: 3 },
+    ],
+    note: "3% rates apply up to $6,000/year in each category, then drop to 1%.",
+  },
+  {
+    id: "amex-gold", name: "Amex Gold Card", issuer: "American Express", network: "American Express",
+    colorFrom: "#C79A4B", colorTo: "#8C6B2F", rewardType: "points", pointValueCents: 2.0, baseRate: 1,
+    rates: [
+      { key: "dining", label: "Restaurants", rate: 4 },
+      { key: "grocery", label: "U.S. supermarkets", rate: 4 },
+    ],
+    note: "Membership Rewards points. Grocery rate capped at $25,000/year. Value estimated at ~2¢/point — actual value depends on redemption.",
+  },
+  {
+    id: "capital-one-savorone", name: "Capital One SavorOne", issuer: "Capital One", network: "Mastercard",
+    colorFrom: "#3A1212", colorTo: "#140505", rewardType: "cashback", baseRate: 1,
+    rates: [
+      { key: "dining", label: "Dining", rate: 3 },
+      { key: "entertainment", label: "Entertainment", rate: 3 },
+      { key: "streaming", label: "Streaming", rate: 3 },
+      { key: "grocery", label: "Grocery stores", rate: 3 },
+    ],
+  },
+  {
+    id: "capital-one-venture", name: "Capital One Venture", issuer: "Capital One", network: "Visa",
+    colorFrom: "#7A1F1F", colorTo: "#3F0F0F", rewardType: "points", pointValueCents: 1.0, baseRate: 2, rates: [],
+    note: "Miles. 5x on hotels and rental cars booked through Capital One Travel isn't reflected. Value estimated at ~1¢/mile.",
+  },
+  {
+    id: "boa-customized-cash", name: "BofA Customized Cash Rewards", issuer: "Bank of America", network: "Visa",
+    colorFrom: "#C8102E", colorTo: "#75081C", rewardType: "cashback", baseRate: 1,
+    rates: [
+      { key: "grocery", label: "Grocery stores", rate: 2 },
+      { key: "wholesale", label: "Wholesale clubs", rate: 2 },
+    ],
+    note: "Plus 3% cash back in one category you choose (gas, online shopping, dining, travel, drug stores, or home improvement), up to $2,500/quarter combined with grocery/wholesale — not applied automatically here.",
+  },
+  {
+    id: "wells-fargo-active-cash", name: "Wells Fargo Active Cash", issuer: "Wells Fargo", network: "Visa",
+    colorFrom: "#B8121C", colorTo: "#8C6B0F", rewardType: "cashback", baseRate: 2, rates: [],
+  },
+];
+
+function canonicalCategory(raw) {
+  const s = (raw || "").toLowerCase();
+  if (s.includes("restaurant") || s.includes("dining") || s.includes("food & drink") || s.includes("food and drink") || s.includes("fast food") || s.includes("coffee")) return "dining";
+  if (s.includes("grocery") || s.includes("groceries") || s.includes("supermarket")) return "grocery";
+  if (s.includes("wholesale") || s.includes("warehouse club")) return "wholesale";
+  if (s.includes("gas") || s.includes("fuel") || s.includes("automotive") || s.includes("auto ")) return "gas";
+  if (s.includes("drug") || s.includes("pharmacy")) return "drugstore";
+  if (s.includes("streaming") || s.includes("subscription")) return "streaming";
+  if (s.includes("entertainment") || s.includes("movie") || s.includes("recreation")) return "entertainment";
+  if (s.includes("transit") || s.includes("parking") || s.includes("toll") || s.includes("rideshare") || s.includes("taxi")) return "transit";
+  if (s.includes("travel") || s.includes("airline") || s.includes("hotel") || s.includes("lodging")) return "travel";
+  return "other";
+}
+
+const CANONICAL_CATEGORIES = [
+  { key: "dining", label: "Dining" },
+  { key: "grocery", label: "Grocery / supermarkets" },
+  { key: "wholesale", label: "Wholesale clubs" },
+  { key: "gas", label: "Gas stations" },
+  { key: "drugstore", label: "Drugstores" },
+  { key: "streaming", label: "Streaming" },
+  { key: "entertainment", label: "Entertainment" },
+  { key: "transit", label: "Transit" },
+  { key: "travel", label: "Travel" },
+  { key: "other", label: "Everything else" },
+];
+
+function effectiveRate(catalogCard, rateOverrides, key) {
+  if (rateOverrides && typeof rateOverrides === "object" && rateOverrides[key] != null) return rateOverrides[key];
+  if (catalogCard) {
+    const entry = catalogCard.rates.find((r) => r.key === key);
+    if (entry) return entry.rate;
+    return catalogCard.baseRate;
+  }
+  if (typeof rateOverrides === "number") return rateOverrides;
+  return 1;
+}
+
+function estimateCardRewards(cardTxns, catalogCard, rateOverrides) {
+  const expenses = cardTxns.filter((t) => t.amount < 0);
+  const totalSpend = expenses.reduce((s, t) => s + -t.amount, 0);
+  const byCategory = {};
+  let totalReward = 0;
+  expenses.forEach((t) => {
+    const key = canonicalCategory(t.category);
+    const rate = effectiveRate(catalogCard, rateOverrides, key);
+    const label = (CANONICAL_CATEGORIES.find((c) => c.key === key) || {}).label || key;
+    const amt = -t.amount;
+    totalReward += amt * (rate / 100);
+    if (!byCategory[key]) byCategory[key] = { spend: 0, reward: 0, rate, label, key };
+    byCategory[key].spend += amt;
+    byCategory[key].reward += amt * (rate / 100);
+  });
+  const rewardType = catalogCard ? catalogCard.rewardType : "cashback";
+  const dollarValue = rewardType === "points" ? totalReward * ((catalogCard.pointValueCents || 1) / 100) : totalReward;
+  return { totalSpend, totalReward, dollarValue, byCategory, rewardType };
+}
+
+// ---------- insights breakdown helpers ----------
+function typeBreakdownData(txns) {
+  const totalCharges = txns.filter((t) => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+  const totalPayments = txns.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  return [
+    { label: "Charges", value: totalCharges, color: "#E38A73" },
+    { label: "Payments & credits", value: totalPayments, color: "#6FCFAE" },
+  ];
+}
+
+function categoryBreakdownData(txns, allCategoriesList) {
+  const totals = {};
+  txns.filter((t) => t.amount < 0).forEach((t) => {
+    const cat = t.category || "Uncategorized";
+    totals[cat] = (totals[cat] || 0) + -t.amount;
+  });
+  const entries = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const top = entries.slice(0, 6);
+  const otherSum = entries.slice(6).reduce((s, [, v]) => s + v, 0);
+  const data = top.map(([cat, val]) => ({ label: cat, value: val, color: categoryColor(cat, allCategoriesList) }));
+  if (otherSum > 0) data.push({ label: "Other", value: otherSum, color: "#B0A99A" });
+  return data;
+}
+
+function cardBreakdownData(txns) {
+  const totals = {};
+  txns.filter((t) => t.amount < 0).forEach((t) => { const c = t.card || "Unlabeled"; totals[c] = (totals[c] || 0) + -t.amount; });
+  const entries = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const top = entries.slice(0, 5);
+  const otherSum = entries.slice(5).reduce((s, [, v]) => s + v, 0);
+  const data = top.map(([name, val], i) => ({ label: name, value: val, color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }));
+  if (otherSum > 0) data.push({ label: "Other", value: otherSum, color: "#B0A99A" });
+  return data;
+}
+
+function projectBreakdownData(transactions) {
+  const totals = {};
+  transactions.forEach((t) => (t.projects || []).forEach((p) => { if (t.amount < 0) totals[p] = (totals[p] || 0) + -t.amount; }));
+  const entries = Object.entries(totals).sort((a, b) => b[1] - a[1]);
+  const top = entries.slice(0, 6);
+  const otherSum = entries.slice(6).reduce((s, [, v]) => s + v, 0);
+  const data = top.map(([name, val], i) => ({ label: name, value: val, color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }));
+  if (otherSum > 0) data.push({ label: "Other", value: otherSum, color: "#B0A99A" });
+  return data;
+}
+
+function merchantKey(desc) {
+  const short = shortMerchantName(desc);
+  return short ? short.toLowerCase() : "";
+}
+
+function pad(n) { return String(n).padStart(2, "0"); }
+
+function parseDateFlexible(raw) {
+  if (raw == null) return null;
+  const str = String(raw).trim();
+  if (!str) return null;
+  let m = str.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  m = str.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})/);
+  if (m) {
+    let [, mm, dd, yy] = m;
+    if (yy.length === 2) yy = (Number(yy) > 50 ? "19" : "20") + yy;
+    return `${yy}-${pad(mm)}-${pad(dd)}`;
+  }
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  }
+  return null;
+}
+
+function parseAmount(raw) {
+  if (raw == null) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  s = s.replace(/[$,\s]/g, "");
+  if (s.startsWith("-")) { neg = true; s = s.slice(1); }
+  else if (s.startsWith("+")) { s = s.slice(1); }
+  const n = parseFloat(s);
+  if (isNaN(n)) return null;
+  return neg ? -n : n;
+}
+
+function detectColumns(fields) {
+  const lower = fields.map((f) => f.toLowerCase());
+  const find = (...keys) => {
+    for (const k of keys) {
+      const idx = lower.findIndex((f) => f.includes(k));
+      if (idx !== -1) return fields[idx];
+    }
+    return null;
+  };
+  return {
+    date: find("date"),
+    description: find("description", "merchant", "payee", "name", "memo"),
+    amount: find("amount"),
+    debit: find("debit", "withdrawal"),
+    credit: find("credit", "deposit"),
+    category: find("category", "type"),
+    card: find("card", "account"),
+  };
+}
+
+// Some issuers (Discover included) export a single Amount column as
+// positive = charge, negative = payment/credit — the opposite of this app's
+// convention (negative = charge, positive = payment/credit). Detect that by
+// checking the sign of rows that look like payments.
+function detectSignFlip(rows, cols) {
+  if (!cols.amount) return 1;
+  let paymentNeg = 0, paymentPos = 0;
+  rows.forEach((row) => {
+    const desc = `${cols.description ? row[cols.description] : ""} ${cols.category ? row[cols.category] : ""}`.toLowerCase();
+    if (desc.includes("payment") || desc.includes("thank you")) {
+      const amt = parseAmount(row[cols.amount]);
+      if (amt == null) return;
+      if (amt < 0) paymentNeg += 1; else if (amt > 0) paymentPos += 1;
+    }
+  });
+  if (paymentNeg > paymentPos && paymentNeg > 0) return -1;
+  return 1;
+}
+
+function formatMoney(n) {
+  const sign = n < 0 ? "-" : "";
+  return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatDateDisplay(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = iso.split("-");
+  return `${m}/${d}/${y}`;
+}
+
+function categoryColor(cat, list) {
+  const idx = list.indexOf(cat);
+  return CATEGORY_PALETTE[idx % CATEGORY_PALETTE.length] || "#5A5A5A";
+}
+
+function shortMerchantName(desc) {
+  if (!desc) return "Unknown";
+  const words = desc.trim().split(/\s+/).filter(Boolean);
+  const stopPattern = /\d|^[A-Z]{2}$/;
+  const picked = [];
+  for (let i = 0; i < words.length && picked.length < 2; i++) {
+    const w = words[i];
+    if (stopPattern.test(w)) {
+      if (picked.length === 0) picked.push(w);
+      break;
+    }
+    picked.push(w);
+  }
+  let name = (picked.join(" ") || words[0] || desc).replace(/[.,]+$/, "");
+  name = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+  return name || desc;
+}
+
+function normalizeDesc(desc) {
+  return desc
+    .toLowerCase()
+    .replace(/[0-9]/g, "")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .slice(0, 3)
+    .join(" ");
+}
+
+function daysBetween(isoA, isoB) {
+  const a = new Date(isoA + "T00:00:00Z");
+  const b = new Date(isoB + "T00:00:00Z");
+  return Math.round((b - a) / 86400000);
+}
+
+function detectRecurring(transactions) {
+  const groups = {};
+  transactions.filter((t) => t.amount < 0).forEach((t) => {
+    const key = normalizeDesc(t.description) || t.description.toLowerCase();
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(t);
+  });
+
+  const results = [];
+  Object.values(groups).forEach((txns) => {
+    if (txns.length < 2) return;
+    const sorted = txns.slice().sort((a, b) => a.date.localeCompare(b.date));
+    const intervals = [];
+    for (let i = 1; i < sorted.length; i++) intervals.push(daysBetween(sorted[i - 1].date, sorted[i].date));
+    const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    const amounts = sorted.map((t) => Math.abs(t.amount));
+    const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
+    const amountsConsistent = amounts.every((a) => Math.abs(a - avgAmount) / avgAmount < 0.15);
+
+    let frequency = null, timesPerYear = 0;
+    if (avgInterval >= 6 && avgInterval <= 8) { frequency = "Weekly"; timesPerYear = 52; }
+    else if (avgInterval >= 25 && avgInterval <= 35) { frequency = "Monthly"; timesPerYear = 12; }
+    else if (avgInterval >= 85 && avgInterval <= 96) { frequency = "Quarterly"; timesPerYear = 4; }
+    else if (avgInterval >= 350 && avgInterval <= 380) { frequency = "Yearly"; timesPerYear = 1; }
+
+    if (frequency && amountsConsistent) {
+      const last = sorted[sorted.length - 1];
+      results.push({
+        key: last.description, description: last.description, card: last.card,
+        frequency, avgAmount, count: sorted.length, lastDate: last.date, estAnnual: avgAmount * timesPerYear,
+      });
+    }
+  });
+
+  return results.sort((a, b) => b.estAnnual - a.estAnnual);
+}
+
+function parseFileAsync(file) {
+  return new Promise((resolve, reject) => {
+    Papa.parse(file, { header: true, skipEmptyLines: true, complete: resolve, error: reject });
+  });
+}
+
+// ---------- PDF statement support (best effort) ----------
+// PDFs don't have real columns, so this reconstructs text lines from item
+// positions on the page, then looks for a "date ... description ... amount"
+// pattern per line. Layouts vary a lot between issuers, so this won't catch
+// everything — anything it misses just won't import, nothing corrupts.
+let pdfjsReadyPromise = null;
+function ensurePdfJs() {
+  if (pdfjsReadyPromise) return pdfjsReadyPromise;
+  pdfjsReadyPromise = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.onload = () => {
+      try {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        resolve(window.pdfjsLib);
+      } catch (e) { reject(e); }
+    };
+    script.onerror = () => reject(new Error("Couldn't load PDF support — check your internet connection and try again."));
+    document.head.appendChild(script);
+  });
+  return pdfjsReadyPromise;
+}
+
+async function extractPdfLines(file) {
+  const pdfjsLib = await ensurePdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const lines = [];
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const rows = {};
+    content.items.forEach((item) => {
+      const y = Math.round(item.transform[5]);
+      if (!rows[y]) rows[y] = [];
+      rows[y].push({ x: item.transform[4], str: item.str });
+    });
+    Object.keys(rows).map(Number).sort((a, b) => b - a).forEach((y) => {
+      const lineText = rows[y].sort((a, b) => a.x - b.x).map((i) => i.str).join(" ").replace(/\s+/g, " ").trim();
+      if (lineText) lines.push(lineText);
+    });
+  }
+  return lines;
+}
+
+function inferStatementYear(lines) {
+  const joined = lines.join(" ");
+  const fullDate = joined.match(/\b\d{1,2}\/\d{1,2}\/(\d{4})\b/);
+  if (fullDate) return fullDate[1];
+  const bareYear = joined.match(/\b(20\d{2})\b/);
+  if (bareYear) return bareYear[1];
+  return String(new Date().getFullYear());
+}
+
+const PDF_LINE_RE = /^(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+(?:\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\s+)?(.+?)\s+(\(?\$?-?[\d,]+\.\d{2}\)?)\s*$/;
+
+// Bank/checking statements group transactions under section headers rather than
+// marking each line with a sign or keyword — these patterns catch the common ones.
+const PDF_POSITIVE_SECTION_RE = /(deposits? and other additions|payments? and other credits|other credits|interest earned|deposits & credits)/i;
+const PDF_NEGATIVE_SECTION_RE = /(withdrawals? and other subtractions|other subtractions|checks paid|checks and substitute checks|service fees|atm and debit card subtractions|purchases and adjustments|^purchases$|fees charged|interest charged|cash advances|debit card purchases|electronic (?:withdrawals|payments))/i;
+
+async function parsePdfTransactions(file) {
+  const lines = await extractPdfLines(file);
+  const defaultYear = inferStatementYear(lines);
+  const results = [];
+  let sectionSign = null;
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const looksLikeTxn = PDF_LINE_RE.test(trimmed);
+    if (!looksLikeTxn) {
+      if (PDF_POSITIVE_SECTION_RE.test(trimmed)) sectionSign = 1;
+      else if (PDF_NEGATIVE_SECTION_RE.test(trimmed)) sectionSign = -1;
+      return;
+    }
+    if (/^total\b/i.test(trimmed)) return;
+
+    const m = trimmed.match(PDF_LINE_RE);
+    if (!m) return;
+    let [, rawDate, rawDesc, rawAmount] = m;
+    if (rawDate.split("/").length === 2) rawDate = `${rawDate}/${defaultYear}`;
+    const dateIso = parseDateFlexible(rawDate);
+    const magnitude = Math.abs(parseAmount(rawAmount) || 0);
+    const desc = rawDesc.trim();
+    if (!dateIso || !magnitude || !desc) return;
+
+    let amount;
+    if (sectionSign != null) {
+      amount = sectionSign * magnitude;
+    } else {
+      const paymentLike = /payment|thank you|\bcredit\b/i.test(desc);
+      amount = paymentLike ? magnitude : -magnitude;
+    }
+    results.push({ date: dateIso, description: desc, amount });
+  });
+  return results;
+}
+
+// ---------- small visual components ----------
+function CardVisual({ card, width = 150, height = 94 }) {
+  return (
+    <div style={{
+      width, height, borderRadius: 10, padding: "12px 14px", position: "relative",
+      background: `linear-gradient(135deg, ${card.colorFrom}, ${card.colorTo})`,
+      color: "#fff", display: "flex", flexDirection: "column", justifyContent: "space-between",
+      boxShadow: "0 4px 10px rgba(0,0,0,0.18)", flexShrink: 0,
+    }}>
+      <div style={{ width: 26, height: 19, borderRadius: 4, background: "rgba(255,255,255,0.35)" }} />
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.25 }}>{card.name}</div>
+        <div style={{ fontSize: 9, opacity: 0.85, marginTop: 3, letterSpacing: 1 }}>{(card.network || "CARD").toUpperCase()}</div>
+      </div>
+    </div>
+  );
+}
+
+function DonutChart({ data, size = 128, thickness = 16, onSegmentClick }) {
+  const [hoverIdx, setHoverIdx] = useState(null);
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const r = (size - thickness) / 2, cx = size / 2, cy = size / 2, circumference = 2 * Math.PI * r;
+  if (!total) {
+    return <svg width={size} height={size}><circle cx={cx} cy={cy} r={r} fill="none" stroke="#E3DFD2" strokeWidth={thickness} /></svg>;
+  }
+  let cumulative = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#E3DFD2" strokeWidth={thickness} />
+      {data.map((d, i) => {
+        const frac = d.value / total;
+        const dash = frac * circumference;
+        const offset = -cumulative * circumference;
+        cumulative += frac;
+        const clickable = !!onSegmentClick && d.label !== "Other";
+        return (
+          <circle
+            key={i} cx={cx} cy={cy} r={r} fill="none" stroke={d.color}
+            strokeWidth={hoverIdx === i ? thickness + 4 : thickness}
+            strokeDasharray={`${dash} ${circumference - dash}`} strokeDashoffset={offset}
+            transform={`rotate(-90 ${cx} ${cy})`}
+            style={{
+              cursor: clickable ? "pointer" : "default", transition: "stroke-width 0.12s, opacity 0.12s",
+              opacity: hoverIdx == null || hoverIdx === i ? 1 : 0.5,
+            }}
+            onMouseEnter={() => clickable && setHoverIdx(i)}
+            onMouseLeave={() => setHoverIdx((h) => (h === i ? null : h))}
+            onClick={() => clickable && onSegmentClick(d.label)}
+          >
+            <title>{clickable ? `${d.label} — click to view these transactions` : d.label}</title>
+          </circle>
+        );
+      })}
+    </svg>
+  );
+}
+
+function StatCard({ label, value, sublabel, onClick }) {
+  return (
+    <div onClick={onClick} className={onClick ? "stat-card-clickable" : ""} style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 12, padding: 16 }}>
+      <div style={{ fontSize: 11, color: "#7A7365", letterSpacing: 0.5, marginBottom: 6 }}>{label.toUpperCase()}</div>
+      <div className="mono" style={{ fontSize: 22, fontWeight: 700 }}>{value}</div>
+      {sublabel && <div style={{ fontSize: 11, color: "#7A7365", marginTop: 2 }}>{sublabel}</div>}
+    </div>
+  );
+}
+
+function DonutCard({ title, data, onSegmentClick }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (!data.length || total <= 0) return null;
+  return (
+    <div style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 12, padding: 16 }}>
+      <div className="serif" style={{ fontSize: 13, fontWeight: 700, marginBottom: 12 }}>{title}</div>
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}><DonutChart data={data} onSegmentClick={onSegmentClick} /></div>
+      {data.map((d) => {
+        const clickable = !!onSegmentClick && d.label !== "Other";
+        return (
+          <div
+            key={d.label} className={`donut-legend-row ${clickable ? "clickable" : ""}`}
+            onClick={() => clickable && onSegmentClick(d.label)}
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginTop: 4, borderRadius: 6, padding: "2px 4px", margin: "2px -4px" }}
+          >
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: d.color, flexShrink: 0 }} />
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+            <span className="mono" style={{ color: "#7A7365" }}>{formatMoney(d.value)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function InsightsPanel({ stat, primaryDonut, secondaryDonut }) {
+  return (
+    <div className="insights-panel" style={{ width: 250, flexShrink: 0, position: "sticky", top: 20, alignSelf: "flex-start", display: "flex", flexDirection: "column", gap: 16 }}>
+      {stat && <StatCard {...stat} />}
+      {primaryDonut && <DonutCard {...primaryDonut} />}
+      {secondaryDonut && <DonutCard {...secondaryDonut} />}
+    </div>
+  );
+}
+
+function CardPickerModal({ fileName, onPick, onCustom, onSkip }) {
+  const [q, setQ] = useState("");
+  const [customName, setCustomName] = useState("");
+  const filtered = CARD_CATALOG.filter((c) => (c.name + " " + c.issuer).toLowerCase().includes(q.toLowerCase()));
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,24,28,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div style={{ background: "#EDEBE3", borderRadius: 14, padding: 24, maxWidth: 740, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+        <div className="serif" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Which card is "{fileName}" from?</div>
+        <div style={{ fontSize: 13, color: "#7A7365", marginBottom: 14 }}>
+          Pick a match so The Ledger can estimate rewards for this card. Don't see it? Add it as a custom card below.
+        </div>
+        <input className="ledger-input" placeholder="Search cards…" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 16 }} />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 14, marginBottom: 20 }}>
+          {filtered.map((c) => (
+            <div key={c.id} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+              <CardVisual card={c} width={"100%"} height={88} />
+              <div style={{ fontSize: 11, textAlign: "center", color: "#7A7365" }}>{c.issuer}</div>
+              <button className="chip" style={{ width: "100%", justifyContent: "center" }} onClick={() => onPick(c)}>Select</button>
+            </div>
+          ))}
+          {filtered.length === 0 && (
+            <div style={{ gridColumn: "1 / -1", color: "#7A7365", fontSize: 13, padding: "12px 0" }}>No matches — add it as a custom card below.</div>
+          )}
+        </div>
+        <div style={{ borderTop: "1px solid #C9C2B2", paddingTop: 16 }}>
+          <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 8, letterSpacing: 0.5 }}>DON'T SEE YOUR CARD?</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              className="ledger-input" style={{ flex: "1 1 220px" }}
+              placeholder='Custom card name, e.g. "Chase Ink Business"'
+              value={customName} onChange={(e) => setCustomName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && customName.trim()) onCustom(customName.trim()); }}
+            />
+            <button className="chip" onClick={() => { if (customName.trim()) onCustom(customName.trim()); }}>Add card</button>
+          </div>
+        </div>
+        <button onClick={onSkip} style={{ marginTop: 18, background: "none", border: "none", color: "#A6432F", fontSize: 12, cursor: "pointer" }}>
+          Skip this file
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function formatISO(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+
+function CalendarPopup({ initialStart, initialEnd, onApply, onClose }) {
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(initialStart ? parseInt(initialStart.slice(0, 4)) : today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(initialStart ? parseInt(initialStart.slice(5, 7)) - 1 : today.getMonth());
+  const [mode, setMode] = useState("start");
+  const [start, setStart] = useState(initialStart || "");
+  const [end, setEnd] = useState(initialEnd || "");
+
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const pickDay = (d) => {
+    const iso = `${viewYear}-${pad(viewMonth + 1)}-${pad(d)}`;
+    if (mode === "start") {
+      setStart(iso); setEnd(""); setMode("end");
+    } else {
+      let s = start, e = iso;
+      if (e < s) { const tmp = s; s = e; e = tmp; }
+      setStart(s); setEnd(e);
+      onApply(s, e);
+    }
+  };
+
+  const prevMonth = () => { if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); } else setViewMonth(viewMonth - 1); };
+  const nextMonth = () => { if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); } else setViewMonth(viewMonth + 1); };
+  const monthName = new Date(viewYear, viewMonth, 1).toLocaleString(undefined, { month: "long" });
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,24,28,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={onClose}>
+      <div style={{ background: "#EDEBE3", borderRadius: 14, padding: 20, width: 300 }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <button onClick={prevMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>‹</button>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{monthName} {viewYear}</div>
+          <button onClick={nextMonth} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16 }}>›</button>
+        </div>
+        <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 8, textAlign: "center" }}>
+          {mode === "start" ? "Click a start date" : "Now click an end date"}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, fontSize: 11, textAlign: "center", marginBottom: 4, color: "#7A7365" }}>
+          {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => <div key={i}>{d}</div>)}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+          {cells.map((d, i) => {
+            if (d == null) return <div key={i} />;
+            const iso = `${viewYear}-${pad(viewMonth + 1)}-${pad(d)}`;
+            const isStart = iso === start, isEnd = iso === end;
+            const inRange = start && end && iso > start && iso < end;
+            return (
+              <div
+                key={i} onClick={() => pickDay(d)}
+                style={{
+                  textAlign: "center", padding: "5px 0", borderRadius: 6, cursor: "pointer", fontSize: 12,
+                  background: isStart || isEnd ? "#22303F" : inRange ? "#C9C2B233" : "transparent",
+                  color: isStart || isEnd ? "#EDEBE3" : "#22303F",
+                }}
+              >{d}</div>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
+          <button className="chip" onClick={() => { setStart(""); setEnd(""); setMode("start"); }}>Reset</button>
+          <button className="chip" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DateRangeControl({ startDate, endDate, onChange }) {
+  const [showCalendar, setShowCalendar] = useState(false);
+  const applyPreset = (preset) => {
+    const now = new Date();
+    let start = null, end = null;
+    if (preset === "30") { start = new Date(now); start.setDate(start.getDate() - 30); end = now; }
+    else if (preset === "60") { start = new Date(now); start.setDate(start.getDate() - 60); end = now; }
+    else if (preset === "ytd") { start = new Date(now.getFullYear(), 0, 1); end = now; }
+    else if (preset === "all") { onChange("", ""); return; }
+    onChange(formatISO(start), formatISO(end));
+  };
+  const isAll = !startDate && !endDate;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      <button className={`chip ${isAll ? "active" : ""}`} onClick={() => applyPreset("all")}>All</button>
+      <button className="chip" onClick={() => applyPreset("30")}>30 days</button>
+      <button className="chip" onClick={() => applyPreset("60")}>60 days</button>
+      <button className="chip" onClick={() => applyPreset("ytd")}>YTD</button>
+      <button className="chip" onClick={() => setShowCalendar(true)} title="Pick exact dates">
+        <I.Calendar size={12} /> {!isAll ? `${startDate ? formatDateDisplay(startDate) : "…"} – ${endDate ? formatDateDisplay(endDate) : "…"}` : "Calendar"}
+      </button>
+      {showCalendar && (
+        <CalendarPopup
+          initialStart={startDate} initialEnd={endDate}
+          onApply={(s, e) => { onChange(s, e); setShowCalendar(false); }}
+          onClose={() => setShowCalendar(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function QuickPicks({ auto, pinned, hidden, search, setSearch, onAdd, onRemoveAuto, onRemovePinned }) {
+  const [adding, setAdding] = useState(false);
+  const [newVal, setNewVal] = useState("");
+  const shown = [...pinned, ...auto.filter((m) => !hidden.has(m) && !pinned.includes(m))];
+  const commitAdd = () => {
+    const v = newVal.trim();
+    if (v) onAdd(v);
+    setNewVal("");
+    setAdding(false);
+  };
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      {shown.map((m) => {
+        const isPinned = pinned.includes(m);
+        const active = search === m;
+        return (
+          <span key={m} className={`chip ${active ? "active" : ""}`} style={{ paddingRight: 6 }}>
+            <span style={{ cursor: "pointer" }} onClick={() => setSearch(active ? "" : m)}>{m}</span>
+            <span
+              onClick={() => (isPinned ? onRemovePinned(m) : onRemoveAuto(m))}
+              style={{ marginLeft: 5, opacity: 0.55, cursor: "pointer" }}
+              title={isPinned ? "Remove this quick pick" : "Hide this suggestion"}
+            >✕</span>
+          </span>
+        );
+      })}
+      {adding ? (
+        <input
+          autoFocus className="ledger-input" style={{ width: 130, padding: "4px 8px", fontSize: 12 }}
+          placeholder="Add quick pick…" value={newVal} onChange={(e) => setNewVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") commitAdd(); if (e.key === "Escape") setAdding(false); }}
+          onBlur={commitAdd}
+        />
+      ) : (
+        <button className="chip" style={{ borderStyle: "dashed" }} onClick={() => setAdding(true)}>+</button>
+      )}
+    </div>
+  );
+}
+
+function DuplicateReviewModal({ dupItems, onConfirm, onCancel }) {
+  const [keep, setKeep] = useState(() => new Set());
+  const toggle = (idx) => {
+    const next = new Set(keep);
+    if (next.has(idx)) next.delete(idx); else next.add(idx);
+    setKeep(next);
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(20,24,28,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div style={{ background: "#EDEBE3", borderRadius: 14, padding: 24, maxWidth: 680, width: "100%", maxHeight: "85vh", overflowY: "auto" }}>
+        <div className="serif" style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>
+          {dupItems.length} possible duplicate{dupItems.length === 1 ? "" : "s"} found
+        </div>
+        <p style={{ fontSize: 12, color: "#7A7365", marginBottom: 16, maxWidth: 560 }}>
+          These rows exactly match the date, description, amount (to the cent), and card of a transaction already in your ledger —
+          or another row in this same upload. There's no fuzzy matching involved, just that exact combination. By default they're
+          skipped. Check any you actually want to import anyway (e.g. two genuinely separate same-day, same-amount purchases at
+          the same store).
+        </p>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <button className="chip" onClick={() => setKeep(new Set())}>Skip all</button>
+          <button className="chip" onClick={() => setKeep(new Set(dupItems.map((_, i) => i)))}>Import all anyway</button>
+        </div>
+        <div style={{ display: "grid", gap: 8, marginBottom: 20 }}>
+          {dupItems.map((item, idx) => (
+            <label key={idx} style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 8, padding: "10px 14px", cursor: "pointer" }}>
+              <input type="checkbox" checked={keep.has(idx)} onChange={() => toggle(idx)} style={{ marginTop: 3 }} />
+              <div style={{ fontSize: 12.5 }}>
+                <div style={{ fontWeight: 600 }}>{item.candidate.description}</div>
+                <div style={{ color: "#7A7365", marginTop: 2 }}>
+                  {formatDateDisplay(item.candidate.date)} · {formatMoney(item.candidate.amount)} · {item.candidate.card}
+                </div>
+                <div style={{ color: "#B0A99A", marginTop: 2, fontSize: 11 }}>Matches {item.matchOf}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #C9C2B2", paddingTop: 16 }}>
+          <button onClick={onCancel} style={{ background: "none", border: "none", color: "#A6432F", fontSize: 12, cursor: "pointer" }}>Cancel entire import</button>
+          <button
+            onClick={() => onConfirm(dupItems.filter((_, i) => keep.has(i)))}
+            style={{ background: "#22303F", color: "#EDEBE3", border: "none", borderRadius: 8, padding: "8px 20px", fontWeight: 600, fontSize: 13, cursor: "pointer" }}
+          >Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CategoryRateEditor({ categories, current, onSave, onCancel }) {
+  const [vals, setVals] = useState(() => {
+    const init = {};
+    categories.forEach((c) => { init[c.key] = current(c.key); });
+    return init;
+  });
+  return (
+    <div style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 10, padding: 16, marginBottom: 20 }}>
+      <div style={{ fontSize: 12, color: "#7A7365", marginBottom: 12 }}>
+        Set your own cash back / points rate per category for this card — use this if your CSV's category text doesn't line up
+        with the automatic detection, or if your card's real rates differ from the built-in estimate.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 10, marginBottom: 14 }}>
+        {categories.map((c) => (
+          <div key={c.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ fontSize: 12, flex: 1 }}>{c.label}</label>
+            <input
+              type="number" step="0.1" className="ledger-input" style={{ width: 64, padding: "4px 6px" }}
+              value={vals[c.key]} onChange={(e) => setVals({ ...vals, [c.key]: parseFloat(e.target.value) || 0 })}
+            />
+            <span style={{ fontSize: 11, color: "#7A7365" }}>%</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="chip" onClick={() => onSave(vals)}>Save rates</button>
+        <button className="chip" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ page, setPage }) {
+  const items = [
+    { id: "summary", label: "Summary", icon: <I.Chart size={14} /> },
+    { id: "dashboard", label: "Dashboard", icon: <I.Grid size={14} /> },
+    { id: "cards", label: "Cards", icon: <I.Card size={14} /> },
+    { id: "projects", label: "Projects", icon: <I.Folder size={14} /> },
+    { id: "rewards", label: "Rewards", icon: <I.Star size={14} /> },
+  ];
+  return (
+    <div className="app-sidebar" style={{ width: 180, flexShrink: 0, background: "#1A2530", color: "#EDEBE3", height: "100vh", position: "sticky", top: 0, alignSelf: "flex-start", overflowY: "auto", padding: "22px 12px" }}>
+      <div className="serif sidebar-title" style={{ fontSize: 16, fontWeight: 700, padding: "0 10px 22px" }}>The Ledger</div>
+      {items.map((it) => (
+        <button
+          key={it.id} onClick={() => setPage(it.id)}
+          className="sidebar-item"
+          style={{
+            display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left",
+            background: page === it.id ? "rgba(255,255,255,0.1)" : "transparent",
+            border: "none", color: page === it.id ? "#EDEBE3" : "#9AA5AD", borderRadius: 8,
+            padding: "10px 12px", fontSize: 13, cursor: "pointer", marginBottom: 4,
+            fontWeight: page === it.id ? 600 : 400,
+          }}
+        >
+          <span className="sidebar-item-icon">{it.icon}</span> <span className="sidebar-item-label">{it.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 5, letterSpacing: 0.4 }}>{label.toUpperCase()}</div>
+      {children}
+    </div>
+  );
+}
+
+function SummaryCard({ icon, label, value, accent, big, sublabel, onClick }) {
+  return (
+    <div
+      onClick={onClick} className={onClick ? "hero-stat-clickable" : ""}
+      style={{
+        background: big ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.05)",
+        border: `1px solid ${big ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.1)"}`,
+        borderRadius: 10, padding: "14px 16px",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6, color: accent, fontSize: 12, marginBottom: 6 }}>{icon} {label}</div>
+      <div className="mono" style={{ fontSize: big ? 26 : 22, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value}</div>
+      {sublabel && <div style={{ fontSize: 11, color: "#B9C2C9", marginTop: 3 }}>{sublabel}</div>}
+    </div>
+  );
+}
+
+function EmptyState({ onUpload }) {
+  return (
+    <div style={{ border: "1px dashed #C9C2B2", borderRadius: 12, padding: "60px 24px", textAlign: "center", background: "#F6F4EE" }}>
+      <div className="serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Your ledger is empty</div>
+      <p style={{ color: "#7A7365", fontSize: 14, maxWidth: 420, margin: "0 auto 20px" }}>
+        Upload a CSV or PDF statement from your bank or card — CSV works automatically, PDF is best-effort since layouts
+        vary by issuer. Nothing leaves your computer; your data is stored only in this browser, on this device.
+      </p>
+      <button onClick={onUpload} style={{
+        background: "#22303F", color: "#EDEBE3", border: "none", borderRadius: 8,
+        padding: "10px 20px", fontWeight: 600, fontSize: 13, cursor: "pointer",
+        display: "inline-flex", alignItems: "center", gap: 8,
+      }}>
+        <I.Upload size={15} /> Upload your first statement
+      </button>
+    </div>
+  );
+}
+
+const th = { padding: "10px 14px", fontSize: 11, letterSpacing: 0.5, color: "#7A7365", fontWeight: 600 };
+const td = { padding: "10px 14px" };
+
+function TagsEditor({ t, onSave, onCancel }) {
+  const [tagsText, setTagsText] = useState((t.tags || []).join(", "));
+  const [projText, setProjText] = useState((t.projects || []).join(", "));
+  const commit = () => {
+    const tags = tagsText.split(",").map((s) => s.trim()).filter(Boolean);
+    const projects = projText.split(",").map((s) => s.trim()).filter(Boolean);
+    onSave(tags, projects);
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 200 }} onClick={(e) => e.stopPropagation()}>
+      <input
+        autoFocus className="ledger-input" style={{ padding: "4px 8px", fontSize: 11 }}
+        placeholder="Tags, comma separated (e.g. Chicago, Vacation)"
+        value={tagsText} onChange={(e) => setTagsText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") onCancel(); }}
+      />
+      <input
+        className="ledger-input" style={{ padding: "4px 8px", fontSize: 11 }}
+        placeholder="Project(s), comma separated (e.g. Chicken Coop)"
+        value={projText} onChange={(e) => setProjText(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") onCancel(); }}
+      />
+      <div style={{ display: "flex", gap: 6 }}>
+        <button className="chip" style={{ fontSize: 10, padding: "3px 10px" }} onClick={commit}>Save</button>
+        <button className="chip" style={{ fontSize: 10, padding: "3px 10px" }} onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function TagsCell({ t, isEditing, onStartEdit, onSave, onCancel }) {
+  if (isEditing) return <TagsEditor t={t} onSave={onSave} onCancel={onCancel} />;
+  const tags = t.tags || [];
+  const projects = t.projects || [];
+  if (tags.length === 0 && projects.length === 0) {
+    return <span onClick={onStartEdit} style={{ cursor: "pointer", fontSize: 11, color: "#B0A99A" }}>+ Add</span>;
+  }
+  return (
+    <div onClick={onStartEdit} style={{ cursor: "pointer", display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 220 }}>
+      {tags.map((tag) => (
+        <span key={"t" + tag} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 999, background: "#3F5A7322", color: "#3F5A73" }}>{tag}</span>
+      ))}
+      {projects.map((p) => (
+        <span key={"p" + p} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 999, background: "#C98A3E22", color: "#C98A3E", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}>
+          <I.Folder size={8} /> {p}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function BulkActionBar({ count, categories, allTags, onApply, onAddTags, onFlipSign, onClear }) {
+  const [catVal, setCatVal] = useState("");
+  const [tagsVal, setTagsVal] = useState("");
+  const [projVal, setProjVal] = useState("");
+  const commitCat = () => {
+    const v = catVal.trim();
+    if (v) { onApply(v); setCatVal(""); }
+  };
+  const commitTags = () => {
+    const tags = tagsVal.split(",").map((s) => s.trim()).filter(Boolean);
+    const projects = projVal.split(",").map((s) => s.trim()).filter(Boolean);
+    if (tags.length || projects.length) { onAddTags(tags, projects); setTagsVal(""); setProjVal(""); }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, background: "#22303F", color: "#EDEBE3", borderRadius: 10, padding: "10px 16px", marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{count} selected</span>
+        <input
+          list="bulk-category-options" className="ledger-input" style={{ width: 180, background: "#EDEBE3" }}
+          placeholder="Set category to…" value={catVal} onChange={(e) => setCatVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") commitCat(); }}
+        />
+        <datalist id="bulk-category-options">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+        <button className="chip" onClick={commitCat}>Apply category</button>
+        <button className="chip" onClick={onFlipSign} title="Swap charge/payment sign on just the selected rows">
+          <I.Repeat size={11} /> Flip sign
+        </button>
+        <button onClick={onClear} style={{ marginLeft: "auto", background: "none", border: "none", color: "#EDEBE3", cursor: "pointer", fontSize: 12, opacity: 0.85 }}>
+          Clear selection
+        </button>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <input
+          list="bulk-tag-options" className="ledger-input" style={{ width: 180, background: "#EDEBE3" }}
+          placeholder="Add tags (comma sep)…" value={tagsVal} onChange={(e) => setTagsVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") commitTags(); }}
+        />
+        <datalist id="bulk-tag-options">{allTags.map((t) => <option key={t} value={t} />)}</datalist>
+        <input
+          className="ledger-input" style={{ width: 180, background: "#EDEBE3" }}
+          placeholder="Add project(s)…" value={projVal} onChange={(e) => setProjVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") commitTags(); }}
+        />
+        <button className="chip" onClick={commitTags}>Add tags / project</button>
+      </div>
+    </div>
+  );
+}
+
+function SortableTh({ label, field, sortBy, sortDir, onSort, align, extraStyle }) {
+  const active = sortBy === field;
+  return (
+    <th style={{ ...th, textAlign: align || "left", cursor: "pointer", userSelect: "none", ...extraStyle }} onClick={() => onSort(field)}>
+      {label} <span style={{ opacity: active ? 1 : 0.25 }}>{active ? (sortDir === "asc" ? "↑" : "↓") : "↕"}</span>
+    </th>
+  );
+}
+
+function TransactionTable({ transactions, allCategories, editingCatId, setEditingCatId, updateCategory, deleteTransaction, editingTagsId, setEditingTagsId, updateTags, selectedIds, toggleSelect, toggleSelectAll, showCard = true }) {
+  const [sortBy, setSortBy] = useState("date");
+  const [sortDir, setSortDir] = useState("desc");
+  const handleSort = (field) => {
+    if (sortBy === field) { setSortDir((d) => (d === "asc" ? "desc" : "asc")); return; }
+    setSortBy(field);
+    setSortDir(field === "description" ? "asc" : "desc");
+  };
+  const sorted = useMemo(() => {
+    const list = transactions.slice();
+    list.sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === "date") cmp = (a.date || "").localeCompare(b.date || "");
+      else if (sortBy === "amount") cmp = a.amount - b.amount;
+      else if (sortBy === "description") cmp = (a.description || "").localeCompare(b.description || "");
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return list;
+  }, [transactions, sortBy, sortDir]);
+  const visibleIds = sorted.map((t) => t.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  return (
+    <div style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #C9C2B2", textAlign: "left" }}>
+              <th style={{ ...th, width: 32 }}>
+                <input type="checkbox" checked={allVisibleSelected} onChange={() => toggleSelectAll(visibleIds)} />
+              </th>
+              <SortableTh label="Date" field="date" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+              <SortableTh label="Description" field="description" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+              {showCard && <th style={th}>Card</th>}
+              <th style={th}>Category</th>
+              <th style={th}>Tags</th>
+              <SortableTh label="Amount" field="amount" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} align="right" />
+              <th style={{ ...th, width: 36 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.length === 0 ? (
+              <tr><td colSpan={showCard ? 8 : 7} style={{ padding: 28, textAlign: "center", color: "#7A7365" }}>No transactions match these filters.</td></tr>
+            ) : sorted.map((t) => (
+              <tr key={t.id} className="row-hover" style={{ borderBottom: "1px solid #E3DFD2", background: selectedIds.has(t.id) ? "#22303F0D" : undefined }}>
+                <td style={{ ...td, textAlign: "center" }}>
+                  <input type="checkbox" checked={selectedIds.has(t.id)} onChange={() => toggleSelect(t.id)} />
+                </td>
+                <td className="mono" style={td}>{formatDateDisplay(t.date)}</td>
+                <td style={td}>{t.description || "(no description)"}</td>
+                {showCard && <td style={{ ...td, fontSize: 12, color: "#7A7365" }}>{t.card || "Unlabeled"}</td>}
+                <td style={td}>
+                  {editingCatId === t.id ? (
+                    <input
+                      autoFocus className="ledger-input" style={{ padding: "4px 8px", fontSize: 12 }}
+                      defaultValue={t.category}
+                      onBlur={(e) => updateCategory(t.id, e.target.value.trim())}
+                      onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") setEditingCatId(null); }}
+                    />
+                  ) : (
+                    <span
+                      onClick={() => setEditingCatId(t.id)}
+                      style={{
+                        cursor: "pointer", fontSize: 11, padding: "3px 9px", borderRadius: 999,
+                        background: categoryColor(t.category, allCategories) + "22",
+                        color: categoryColor(t.category, allCategories), fontWeight: 600,
+                      }}
+                    >{t.category}</span>
+                  )}
+                </td>
+                <td style={td}>
+                  <TagsCell
+                    t={t} isEditing={editingTagsId === t.id}
+                    onStartEdit={() => setEditingTagsId(t.id)}
+                    onSave={(tags, projects) => { updateTags(t.id, tags, projects); setEditingTagsId(null); }}
+                    onCancel={() => setEditingTagsId(null)}
+                  />
+                </td>
+                <td className="mono" style={{ ...td, textAlign: "right", color: t.amount < 0 ? "#A6432F" : "#2F6F5E", fontWeight: 600 }}>{formatMoney(t.amount)}</td>
+                <td style={{ ...td, textAlign: "center" }}>
+                  <button onClick={() => deleteTransaction(t.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#B0A99A" }}>
+                    <I.Trash size={14} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Cards page ----------
+function CardsPage({ transactions, allCategories, editingCatId, setEditingCatId, updateCategory, deleteTransaction, editingTagsId, setEditingTagsId, updateTags, selectedIds, toggleSelect, toggleSelectAll, flipCardSigns, fixPaymentSigns, selected, setSelected }) {
+  const cardGroups = useMemo(() => {
+    const map = {};
+    transactions.forEach((t) => {
+      const name = t.card || "Unlabeled";
+      if (!map[name]) map[name] = { name, catalogId: t.cardCatalogId || null, count: 0, charges: 0, payments: 0, files: new Set() };
+      map[name].count += 1;
+      if (t.amount < 0) map[name].charges += -t.amount; else map[name].payments += t.amount;
+      map[name].files.add(t.source || "unknown file");
+    });
+    return Object.values(map).sort((a, b) => b.charges - a.charges);
+  }, [transactions]);
+
+  if (selected && cardGroups.find((g) => g.name === selected)) {
+    const group = cardGroups.find((g) => g.name === selected);
+    const cardTxns = transactions.filter((t) => (t.card || "Unlabeled") === selected).sort((a, b) => b.date.localeCompare(a.date));
+    const fileGroups = {};
+    cardTxns.forEach((t) => {
+      const f = t.source || "unknown file";
+      if (!fileGroups[f]) fileGroups[f] = { count: 0, minDate: t.date, maxDate: t.date };
+      fileGroups[f].count += 1;
+      if (t.date < fileGroups[f].minDate) fileGroups[f].minDate = t.date;
+      if (t.date > fileGroups[f].maxDate) fileGroups[f].maxDate = t.date;
+    });
+    const catalogCard = CARD_CATALOG.find((c) => c.id === group.catalogId);
+
+    return (
+      <div>
+        <button onClick={() => setSelected(null)} className="chip" style={{ marginBottom: 18 }}><I.Back size={12} /> All cards</button>
+        <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+          {catalogCard ? <CardVisual card={catalogCard} /> : <CardVisual card={{ name: selected, network: "Card", colorFrom: "#5A5A5A", colorTo: "#333" }} />}
+          <div>
+            <div className="serif" style={{ fontSize: 20, fontWeight: 700 }}>{selected}</div>
+            <div style={{ fontSize: 12, color: "#7A7365", marginTop: 2 }}>
+              {group.count} transactions · {formatMoney(group.charges)} in charges · {formatMoney(group.payments)} in payments/credits
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 22 }}>
+          <button
+            className="chip" style={{ fontSize: 11 }}
+            onClick={() => flipCardSigns(selected)}
+            title="Use this if EVERY charge and payment on this card looks swapped"
+          >
+            <I.Repeat size={11} /> All charges/payments swapped? Flip everything
+          </button>
+          <button
+            className="chip" style={{ fontSize: 11 }}
+            onClick={() => fixPaymentSigns(selected)}
+            title='Use this if only rows containing "payment" or "thank you" are showing as negative charges instead of positive payments'
+          >
+            <I.Repeat size={11} /> Only payments look wrong? Fix just those rows
+          </button>
+        </div>
+
+        <div className="serif" style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Imported files</div>
+        <div style={{ display: "grid", gap: 8, marginBottom: 26 }}>
+          {Object.entries(fileGroups).map(([f, info]) => (
+            <div key={f} style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6, fontSize: 13 }}>
+              <span>{f}</span>
+              <span style={{ color: "#7A7365", fontSize: 12 }}>{info.count} transactions · {formatDateDisplay(info.minDate)} – {formatDateDisplay(info.maxDate)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="serif" style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Transactions</div>
+        <TransactionTable
+          transactions={cardTxns} allCategories={allCategories} editingCatId={editingCatId}
+          setEditingCatId={setEditingCatId} updateCategory={updateCategory} deleteTransaction={deleteTransaction}
+          editingTagsId={editingTagsId} setEditingTagsId={setEditingTagsId} updateTags={updateTags}
+          selectedIds={selectedIds} toggleSelect={toggleSelect} toggleSelectAll={toggleSelectAll} showCard={false}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 16 }}>Your cards</div>
+      {cardGroups.length === 0 ? (
+        <div style={{ color: "#7A7365", fontSize: 14 }}>Upload a CSV to see your cards here.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 16 }}>
+          {cardGroups.map((g) => {
+            const catalogCard = CARD_CATALOG.find((c) => c.id === g.catalogId);
+            return (
+              <div
+                key={g.name} onClick={() => setSelected(g.name)}
+                style={{ cursor: "pointer", background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}
+              >
+                {catalogCard ? <CardVisual card={catalogCard} width={"100%"} height={90} /> : <CardVisual card={{ name: g.name, network: "Card", colorFrom: "#5A5A5A", colorTo: "#333" }} width={"100%"} height={90} />}
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{g.name}</div>
+                <div style={{ fontSize: 11, color: "#7A7365" }}>{g.count} transactions · {g.files.size} file{g.files.size === 1 ? "" : "s"}</div>
+                <div className="mono" style={{ fontSize: 13, fontWeight: 600, color: "#A6432F" }}>{formatMoney(g.charges)} charged</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Projects page ----------
+function ProjectsPage({ transactions, allCategories, editingCatId, setEditingCatId, updateCategory, deleteTransaction, editingTagsId, setEditingTagsId, updateTags, selectedIds, toggleSelect, toggleSelectAll }) {
+  const [selected, setSelected] = useState(null);
+
+  const projectGroups = useMemo(() => {
+    const map = {};
+    transactions.forEach((t) => {
+      (t.projects || []).forEach((p) => {
+        if (!map[p]) map[p] = { name: p, count: 0, spend: 0 };
+        map[p].count += 1;
+        if (t.amount < 0) map[p].spend += -t.amount;
+      });
+    });
+    return Object.values(map).sort((a, b) => b.spend - a.spend);
+  }, [transactions]);
+
+  if (selected) {
+    const txns = transactions.filter((t) => (t.projects || []).includes(selected)).sort((a, b) => b.date.localeCompare(a.date));
+    const spend = txns.reduce((s, t) => (t.amount < 0 ? s + -t.amount : s), 0);
+    return (
+      <div>
+        <button onClick={() => setSelected(null)} className="chip" style={{ marginBottom: 18 }}><I.Back size={12} /> All projects</button>
+        <div className="serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 4 }}>{selected}</div>
+        <div style={{ fontSize: 12, color: "#7A7365", marginBottom: 20 }}>{txns.length} transactions · {formatMoney(spend)} spent</div>
+        <TransactionTable
+          transactions={txns} allCategories={allCategories} editingCatId={editingCatId} setEditingCatId={setEditingCatId}
+          updateCategory={updateCategory} deleteTransaction={deleteTransaction}
+          editingTagsId={editingTagsId} setEditingTagsId={setEditingTagsId} updateTags={updateTags}
+          selectedIds={selectedIds} toggleSelect={toggleSelect} toggleSelectAll={toggleSelectAll} showCard
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Projects</div>
+      <p style={{ fontSize: 13, color: "#7A7365", marginBottom: 18, maxWidth: 600 }}>
+        Tag any transaction with a project — like "Chicken Coop" or "Kitchen Remodel" — to track what it costs across every card and statement. Projects show up here automatically.
+      </p>
+      {projectGroups.length === 0 ? (
+        <div style={{ color: "#7A7365", fontSize: 14 }}>No projects yet — open a transaction's Tags cell on the Dashboard and add a project to get started.</div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 16 }}>
+          {projectGroups.map((p) => (
+            <div key={p.name} onClick={() => setSelected(p.name)} style={{ cursor: "pointer", background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 12, padding: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 32, height: 32, borderRadius: 8, background: "#C98A3E22", display: "flex", alignItems: "center", justifyContent: "center", color: "#C98A3E" }}><I.Folder size={16} /></span>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{p.name}</div>
+              </div>
+              <div style={{ fontSize: 11, color: "#7A7365" }}>{p.count} transaction{p.count === 1 ? "" : "s"}</div>
+              <div className="mono" style={{ fontSize: 16, fontWeight: 700, color: "#A6432F" }}>{formatMoney(p.spend)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Rewards page ----------
+function RewardsPage({ transactions, allCategories, editingCatId, setEditingCatId, updateCategory, deleteTransaction, editingTagsId, setEditingTagsId, updateTags, selectedIds, toggleSelect, toggleSelectAll, rateOverrides, saveCategoryRates }) {
+  const [selectedCard, setSelectedCard] = useState(null);
+  const [selectedCategoryKey, setSelectedCategoryKey] = useState(null);
+  const [showRateEditor, setShowRateEditor] = useState(false);
+
+  const cardGroups = useMemo(() => {
+    const map = {};
+    transactions.forEach((t) => {
+      const name = t.card || "Unlabeled";
+      if (!map[name]) map[name] = { name, catalogId: t.cardCatalogId || null, txns: [] };
+      map[name].txns.push(t);
+    });
+    return Object.values(map);
+  }, [transactions]);
+
+  if (cardGroups.length === 0) {
+    return <div style={{ color: "#7A7365", fontSize: 14 }}>Upload some statements first, then come back here to see estimated cashback and points per card.</div>;
+  }
+
+  const g = selectedCard ? cardGroups.find((x) => x.name === selectedCard) : null;
+
+  if (selectedCard && g) {
+    const catalogCard = CARD_CATALOG.find((c) => c.id === g.catalogId);
+    const cardOverrides = rateOverrides[g.name];
+    const result = estimateCardRewards(g.txns, catalogCard, cardOverrides);
+    const categoryTxns = (selectedCategoryKey
+      ? g.txns.filter((t) => t.amount < 0 && canonicalCategory(t.category) === selectedCategoryKey)
+      : g.txns.filter((t) => t.amount < 0)
+    ).sort((a, b) => b.date.localeCompare(a.date));
+
+    return (
+      <div>
+        <button onClick={() => { setSelectedCard(null); setSelectedCategoryKey(null); setShowRateEditor(false); }} className="chip" style={{ marginBottom: 18 }}><I.Back size={12} /> All cards</button>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 14 }}>
+          {catalogCard ? <CardVisual card={catalogCard} width={140} height={88} /> : <CardVisual card={{ name: g.name, network: "Card", colorFrom: "#5A5A5A", colorTo: "#333" }} width={140} height={88} />}
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{g.name}</div>
+            <div style={{ fontSize: 12, color: "#7A7365", marginTop: 2 }}>{formatMoney(result.totalSpend)} in charges</div>
+            <div className="mono" style={{ fontSize: 24, fontWeight: 700, color: "#2F6F5E", marginTop: 8 }}>
+              {result.rewardType === "points" ? `${Math.round(result.totalReward).toLocaleString()} pts` : formatMoney(result.totalReward)}
+            </div>
+            {result.rewardType === "points" && <div style={{ fontSize: 12, color: "#7A7365" }}>≈ {formatMoney(result.dollarValue)} estimated value</div>}
+            {catalogCard && catalogCard.note && <div style={{ fontSize: 11, color: "#7A7365", marginTop: 8, maxWidth: 440 }}>{catalogCard.note}</div>}
+          </div>
+        </div>
+
+        <button className="chip" style={{ marginBottom: 18, fontSize: 11 }} onClick={() => setShowRateEditor((s) => !s)}>
+          <I.Tag size={11} /> Customize category rates
+        </button>
+
+        {showRateEditor && (
+          <CategoryRateEditor
+            categories={CANONICAL_CATEGORIES}
+            current={(key) => effectiveRate(catalogCard, cardOverrides, key)}
+            onSave={(vals) => { saveCategoryRates(g.name, vals); setShowRateEditor(false); }}
+            onCancel={() => setShowRateEditor(false)}
+          />
+        )}
+
+        <div className="serif" style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Where the reward came from</div>
+        <p style={{ fontSize: 11, color: "#7A7365", marginBottom: 10 }}>Click a category to see exactly which transactions earned that rate.</p>
+        <div style={{ display: "grid", gap: 6, marginBottom: 24 }}>
+          {Object.values(result.byCategory).sort((a, b) => b.reward - a.reward).map((c) => (
+            <div
+              key={c.key} onClick={() => setSelectedCategoryKey(selectedCategoryKey === c.key ? null : c.key)}
+              style={{
+                display: "flex", justifyContent: "space-between", fontSize: 12, flexWrap: "wrap", gap: 4, cursor: "pointer",
+                background: selectedCategoryKey === c.key ? "#22303F14" : "#F6F4EE", border: "1px solid #C9C2B2",
+                borderRadius: 8, padding: "8px 12px",
+              }}
+            >
+              <span>{c.label} <span style={{ color: "#7A7365" }}>({c.rate}{result.rewardType === "points" ? "x" : "%"})</span></span>
+              <span className="mono">{formatMoney(c.spend)} → {result.rewardType === "points" ? `${Math.round(c.reward)} pts` : formatMoney(c.reward)}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="serif" style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>
+          {selectedCategoryKey ? "Transactions earning this rate" : "All charges on this card"}
+        </div>
+        <TransactionTable
+          transactions={categoryTxns} allCategories={allCategories} editingCatId={editingCatId} setEditingCatId={setEditingCatId}
+          updateCategory={updateCategory} deleteTransaction={deleteTransaction}
+          editingTagsId={editingTagsId} setEditingTagsId={setEditingTagsId} updateTags={updateTags}
+          selectedIds={selectedIds} toggleSelect={toggleSelect} toggleSelectAll={toggleSelectAll} showCard={false}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Rewards estimate</div>
+      <p style={{ fontSize: 13, color: "#7A7365", marginBottom: 22, maxWidth: 640 }}>
+        Estimated from your imported transactions and each card's standard reward categories, across all imported history.
+        Click into a card to see the exact transactions behind the numbers, or set your own category rates if the built-in
+        estimate doesn't match your card.
+        Rotating categories, activation requirements, and spending caps are noted per card — always confirm exact terms with your issuer.
+      </p>
+      <div style={{ display: "grid", gap: 16 }}>
+        {cardGroups.map((cg) => {
+          const catalogCard = CARD_CATALOG.find((c) => c.id === cg.catalogId);
+          const result = estimateCardRewards(cg.txns, catalogCard, rateOverrides[cg.name]);
+          return (
+            <div key={cg.name} style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 12, padding: 18, cursor: "pointer" }} onClick={() => setSelectedCard(cg.name)}>
+              <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+                {catalogCard ? <CardVisual card={catalogCard} width={140} height={88} /> : <CardVisual card={{ name: cg.name, network: "Card", colorFrom: "#5A5A5A", colorTo: "#333" }} width={140} height={88} />}
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700 }}>{cg.name}</div>
+                  <div style={{ fontSize: 12, color: "#7A7365", marginTop: 2 }}>{formatMoney(result.totalSpend)} in charges</div>
+                  <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "#2F6F5E", marginTop: 8 }}>
+                    {result.rewardType === "points" ? `${Math.round(result.totalReward).toLocaleString()} pts` : formatMoney(result.totalReward)}
+                  </div>
+                  {result.rewardType === "points" && (
+                    <div style={{ fontSize: 12, color: "#7A7365" }}>≈ {formatMoney(result.dollarValue)} estimated value</div>
+                  )}
+                  {catalogCard && catalogCard.note && (
+                    <div style={{ fontSize: 11, color: "#7A7365", marginTop: 8, maxWidth: 440 }}>{catalogCard.note}</div>
+                  )}
+                  <div style={{ fontSize: 11, color: "#3F5A73", marginTop: 8 }}>Click to see category breakdown &amp; customize rates →</div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Summary page ----------
+function SummaryPage({ transactions, allCategories, rateOverrides, goToCategory, goToCard, goToProject, setPage }) {
+  if (transactions.length === 0) {
+    return <div style={{ color: "#7A7365", fontSize: 14 }}>Upload some statements to see your compiled summary here.</div>;
+  }
+
+  const expenses = transactions.filter((t) => t.amount < 0);
+  const income = transactions.filter((t) => t.amount > 0);
+  const totalCharges = expenses.reduce((s, t) => s + -t.amount, 0);
+  const totalPayments = income.reduce((s, t) => s + t.amount, 0);
+  const avgCharge = expenses.length ? totalCharges / expenses.length : 0;
+  const cardCount = new Set(transactions.map((t) => t.card || "Unlabeled")).size;
+
+  const recurring = detectRecurring(transactions);
+  const estMonthlyRecurring = recurring.reduce((s, r) => s + (r.frequency === "Monthly" ? r.avgAmount : r.estAnnual / 12), 0);
+
+  const cardMap = {};
+  transactions.forEach((t) => {
+    const name = t.card || "Unlabeled";
+    if (!cardMap[name]) cardMap[name] = { name, catalogId: t.cardCatalogId || null, txns: [] };
+    cardMap[name].txns.push(t);
+  });
+  let totalRewardValue = 0;
+  const rewardPerCard = [];
+  Object.values(cardMap).forEach((g) => {
+    const catalogCard = CARD_CATALOG.find((c) => c.id === g.catalogId);
+    const result = estimateCardRewards(g.txns, catalogCard, rateOverrides[g.name]);
+    totalRewardValue += result.dollarValue;
+    rewardPerCard.push({ name: g.name, value: Math.max(0, result.dollarValue) });
+  });
+  rewardPerCard.sort((a, b) => b.value - a.value);
+  const rewardTop = rewardPerCard.slice(0, 6);
+  const rewardOther = rewardPerCard.slice(6).reduce((s, e) => s + e.value, 0);
+  const rewardDonutData = rewardTop.map((e, i) => ({ label: e.name, value: e.value, color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }));
+  if (rewardOther > 0) rewardDonutData.push({ label: "Other", value: rewardOther, color: "#B0A99A" });
+
+  const projTotals = {};
+  transactions.forEach((t) => (t.projects || []).forEach((p) => { if (t.amount < 0) projTotals[p] = (projTotals[p] || 0) + -t.amount; }));
+  const hasProjects = Object.keys(projTotals).length > 0;
+
+  return (
+    <div>
+      <div className="serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Summary</div>
+      <p style={{ fontSize: 13, color: "#7A7365", marginBottom: 22, maxWidth: 640 }}>
+        A compiled view across everything you've imported — every card, category, and project, all in one place.
+      </p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 24 }}>
+        <StatCard label="Avg per charge" value={formatMoney(avgCharge)} sublabel={`${expenses.length} charges`} />
+        <StatCard label="Cards" value={String(cardCount)} onClick={() => setPage("cards")} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16, marginBottom: 24 }}>
+        <DonutCard title="Spending by category" data={categoryBreakdownData(transactions, allCategories)} onSegmentClick={goToCategory} />
+        <DonutCard title="Spending by card" data={cardBreakdownData(transactions)} onSegmentClick={goToCard} />
+        {hasProjects && <DonutCard title="Spending by project" data={projectBreakdownData(transactions)} onSegmentClick={goToProject} />}
+        <DonutCard title="Estimated rewards by card" data={rewardDonutData} onSegmentClick={goToCard} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+        <StatCard label="Est. monthly recurring" value={formatMoney(estMonthlyRecurring)} sublabel={`${recurring.length} recurring charge${recurring.length === 1 ? "" : "s"}`} />
+        <StatCard label="Est. total rewards" value={formatMoney(totalRewardValue)} sublabel="across all cards" />
+      </div>
+    </div>
+  );
+}
+
+// ---------- main app ----------
+function LedgerApp() {
+  const [transactions, setTransactions] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [page, setPage] = useState("dashboard");
+  const [importMsg, setImportMsg] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [cardPickerRequest, setCardPickerRequest] = useState(null);
+  const [duplicateReview, setDuplicateReview] = useState(null);
+  const [search, setSearch] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [activeCategories, setActiveCategories] = useState(new Set());
+  const [activeCards, setActiveCards] = useState(new Set());
+  const [activeTags, setActiveTags] = useState(new Set());
+  const [activeProjects, setActiveProjects] = useState(new Set());
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [editingCatId, setEditingCatId] = useState(null);
+  const [editingTagsId, setEditingTagsId] = useState(null);
+  const [showFilters, setShowFilters] = useState(true);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
+  const [quickPickHidden, setQuickPickHidden] = useState(new Set());
+  const [quickPickPinned, setQuickPickPinned] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [cardsPageSelected, setCardsPageSelected] = useState(null);
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [merchantCategories, setMerchantCategories] = useState({});
+  const [rateOverrides, setRateOverrides] = useState({});
+  const fileInputRef = useRef(null);
+  const cancelledRef = useRef(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await storage.get(STORAGE_KEY);
+        if (res && res.value) setTransactions(JSON.parse(res.value));
+      } catch (e) { /* no data yet */ }
+      try {
+        const qp = await storage.get(QUICKPICKS_KEY);
+        if (qp && qp.value) {
+          const parsed = JSON.parse(qp.value);
+          setQuickPickHidden(new Set(parsed.hidden || []));
+          setQuickPickPinned(parsed.pinned || []);
+        }
+      } catch (e) { /* none saved yet */ }
+      try {
+        const mc = await storage.get(MERCHANT_CATEGORIES_KEY);
+        if (mc && mc.value) setMerchantCategories(JSON.parse(mc.value));
+      } catch (e) { /* none saved yet */ }
+      try {
+        const rr = await storage.get(RATES_KEY);
+        if (rr && rr.value) setRateOverrides(JSON.parse(rr.value));
+      } catch (e) { /* none saved yet */ }
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    const onScroll = () => setShowBackToTop(window.scrollY > 400);
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const persist = useCallback(async (next) => {
+    setTransactions(next);
+    try {
+      await storage.set(STORAGE_KEY, JSON.stringify(next));
+    } catch (e) {
+      setImportMsg({ type: "error", text: "Couldn't save changes. Your browser storage may be full or disabled." });
+    }
+  }, []);
+
+  const persistQuickPicks = async (hidden, pinned) => {
+    setQuickPickHidden(hidden);
+    setQuickPickPinned(pinned);
+    try { await storage.set(QUICKPICKS_KEY, JSON.stringify({ hidden: Array.from(hidden), pinned })); } catch (e) { /* ignore */ }
+  };
+  const addQuickPick = (val) => { if (!quickPickPinned.includes(val)) persistQuickPicks(quickPickHidden, [...quickPickPinned, val]); };
+  const removeAutoQuickPick = (val) => { const next = new Set(quickPickHidden); next.add(val); persistQuickPicks(next, quickPickPinned); };
+  const removePinnedQuickPick = (val) => persistQuickPicks(quickPickHidden, quickPickPinned.filter((m) => m !== val));
+
+  const pickCardForFile = (fileName) => new Promise((resolve) => setCardPickerRequest({ fileName, resolve }));
+  const reviewDuplicates = (dupItems) => new Promise((resolve) => setDuplicateReview({ dupItems, resolve }));
+
+  const cancelImport = () => { cancelledRef.current = true; };
+
+  const importFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    cancelledRef.current = false;
+    setImporting(true);
+    setImportMsg(null);
+
+    let invalidTotal = 0, skippedFiles = 0, signFlippedFiles = 0, autoCategorized = 0, pdfUnrecognizedFiles = 0;
+    const parsedRows = [];
+    let cancelled = false;
+
+    for (const file of files) {
+      if (cancelledRef.current) { cancelled = true; break; }
+
+      const isPdf = file.name.toLowerCase().endsWith(".pdf") || file.type === "application/pdf";
+      if (isPdf) {
+        let pdfTxns;
+        try {
+          pdfTxns = await parsePdfTransactions(file);
+        } catch (e) {
+          invalidTotal += 1;
+          continue;
+        }
+        if (cancelledRef.current) { cancelled = true; break; }
+        if (pdfTxns.length === 0) { pdfUnrecognizedFiles += 1; continue; }
+
+        const fileCard = await pickCardForFile(file.name);
+        if (cancelledRef.current) { cancelled = true; break; }
+        if (!fileCard) { skippedFiles += 1; continue; }
+
+        pdfTxns.forEach((row) => {
+          let category = "";
+          const learnedKey = merchantKey(row.description);
+          if (learnedKey && merchantCategories[learnedKey]) {
+            category = merchantCategories[learnedKey];
+            autoCategorized += 1;
+          }
+          const dedupKey = `${row.date}|${row.description.toLowerCase()}|${row.amount.toFixed(2)}|${fileCard.name}`;
+          parsedRows.push({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+            date: row.date, description: row.description, amount: row.amount, category: category || "Uncategorized",
+            card: fileCard.name, cardCatalogId: fileCard.catalogId, tags: [], projects: [], source: file.name, dedupKey,
+          });
+        });
+        continue;
+      }
+
+      let results;
+      try {
+        results = await parseFileAsync(file);
+      } catch (e) {
+        invalidTotal += 1;
+        continue;
+      }
+      if (cancelledRef.current) { cancelled = true; break; }
+      const fields = results.meta.fields || [];
+      const cols = detectColumns(fields);
+
+      let fileCard = null;
+      if (!cols.card) {
+        fileCard = await pickCardForFile(file.name);
+        if (cancelledRef.current) { cancelled = true; break; }
+        if (!fileCard) { skippedFiles += 1; continue; }
+      }
+
+      const signFlip = cols.amount ? detectSignFlip(results.data, cols) : 1;
+      if (signFlip === -1) signFlippedFiles += 1;
+
+      results.data.forEach((row) => {
+        const dateIso = cols.date ? parseDateFlexible(row[cols.date]) : null;
+        let amount = null;
+        if (cols.amount) {
+          amount = parseAmount(row[cols.amount]);
+          if (amount != null) amount *= signFlip;
+        } else if (cols.debit || cols.credit) {
+          const rawDebit = cols.debit ? parseAmount(row[cols.debit]) : 0;
+          const rawCredit = cols.credit ? parseAmount(row[cols.credit]) : 0;
+          const debit = rawDebit != null ? Math.abs(rawDebit) : 0;
+          const credit = rawCredit != null ? Math.abs(rawCredit) : 0;
+          if ((rawDebit == null || rawDebit === 0) && (rawCredit == null || rawCredit === 0)) {
+            amount = null;
+          } else {
+            amount = credit - debit;
+          }
+        }
+        const description = cols.description ? String(row[cols.description] || "").trim() : "";
+        let category = cols.category ? String(row[cols.category] || "").trim() : "";
+        const card = cols.card ? (String(row[cols.card] || "").trim() || "Unlabeled") : fileCard.name;
+        const cardCatalogId = cols.card ? null : fileCard.catalogId;
+
+        if (dateIso == null || amount == null || !description) {
+          invalidTotal += 1;
+          return;
+        }
+        if (!category) {
+          const learnedKey = merchantKey(description);
+          if (learnedKey && merchantCategories[learnedKey]) {
+            category = merchantCategories[learnedKey];
+            autoCategorized += 1;
+          }
+        }
+        const dedupKey = `${dateIso}|${description.toLowerCase()}|${amount.toFixed(2)}|${card}`;
+        parsedRows.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          date: dateIso, description, amount, category: category || "Uncategorized",
+          card, cardCatalogId, tags: [], projects: [], source: file.name, dedupKey,
+        });
+      });
+    }
+
+    if (cancelled) {
+      setImporting(false);
+      setImportMsg({ type: "warn", text: "Import cancelled — no changes were made." });
+      return;
+    }
+
+    const existingByKey = new Map(transactions.map((t) => [t.dedupKey, t]));
+    const seenInBatch = new Map();
+    const clean = [];
+    const dupItems = [];
+
+    parsedRows.forEach((row) => {
+      const existingMatch = existingByKey.get(row.dedupKey);
+      const batchMatch = seenInBatch.get(row.dedupKey);
+      if (existingMatch || batchMatch) {
+        dupItems.push({ candidate: row, matchOf: existingMatch ? "an existing transaction already in your ledger" : "another row in this same upload" });
+      } else {
+        seenInBatch.set(row.dedupKey, row);
+        clean.push(row);
+      }
+    });
+
+    let kept = [];
+    if (dupItems.length > 0) {
+      const result = await reviewDuplicates(dupItems);
+      if (result === null) {
+        setImporting(false);
+        setImportMsg({ type: "warn", text: "Import cancelled — no changes were made." });
+        return;
+      }
+      kept = result;
+    }
+
+    const running = transactions.concat(clean, kept);
+    persist(running);
+    setImporting(false);
+    const addedTotal = clean.length + kept.length;
+    const skippedTotal = dupItems.length - kept.length;
+    const parts = [`Added ${addedTotal} transaction${addedTotal === 1 ? "" : "s"}`];
+    if (skippedTotal) parts.push(`skipped ${skippedTotal} duplicate${skippedTotal === 1 ? "" : "s"}`);
+    if (invalidTotal) parts.push(`couldn't read ${invalidTotal} row${invalidTotal === 1 ? "" : "s"}`);
+    if (skippedFiles) parts.push(`skipped ${skippedFiles} file${skippedFiles === 1 ? "" : "s"}`);
+    if (signFlippedFiles) parts.push(`auto-corrected charge/payment signs in ${signFlippedFiles} file${signFlippedFiles === 1 ? "" : "s"}`);
+    if (autoCategorized) parts.push(`auto-categorized ${autoCategorized} row${autoCategorized === 1 ? "" : "s"} from merchants you've categorized before`);
+    if (pdfUnrecognizedFiles) parts.push(`couldn't find recognizable transaction lines in ${pdfUnrecognizedFiles} PDF file${pdfUnrecognizedFiles === 1 ? "" : "s"} — that statement's layout may not be supported yet`);
+    setImportMsg({ type: addedTotal ? "success" : "warn", text: parts.join(", ") + "." });
+  }, [transactions, persist, merchantCategories]);
+
+  const deleteTransaction = (id) => persist(transactions.filter((t) => t.id !== id));
+
+  const clearAll = () => {
+    if (window.confirm("Delete all imported transactions? This can't be undone.")) persist([]);
+  };
+
+  const persistMerchantCategories = async (next) => {
+    setMerchantCategories(next);
+    try { await storage.set(MERCHANT_CATEGORIES_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
+  };
+
+  const updateCategory = (id, category) => {
+    const finalCategory = category || "Uncategorized";
+    const target = transactions.find((t) => t.id === id);
+    const key = target ? merchantKey(target.description) : "";
+    const shouldLearn = finalCategory !== "Uncategorized" && !!key;
+    const next = transactions.map((t) => {
+      if (t.id === id) return { ...t, category: finalCategory };
+      if (shouldLearn && (t.category === "Uncategorized" || !t.category) && merchantKey(t.description) === key) {
+        return { ...t, category: finalCategory };
+      }
+      return t;
+    });
+    persist(next);
+    setEditingCatId(null);
+    if (shouldLearn) persistMerchantCategories({ ...merchantCategories, [key]: finalCategory });
+  };
+
+  const updateTags = (id, tags, projects) => {
+    const next = transactions.map((t) => (t.id === id ? { ...t, tags, projects } : t));
+    persist(next);
+  };
+
+  const toggleSelect = (id) => {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelectedIds(next);
+  };
+  const toggleSelectAll = (ids) => {
+    const allSelected = ids.length > 0 && ids.every((id) => selectedIds.has(id));
+    const next = new Set(selectedIds);
+    ids.forEach((id) => (allSelected ? next.delete(id) : next.add(id)));
+    setSelectedIds(next);
+  };
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const bulkSetCategory = (category) => {
+    const finalCategory = category || "Uncategorized";
+    const selectedTxns = transactions.filter((t) => selectedIds.has(t.id));
+    const keysToLearn = new Set();
+    selectedTxns.forEach((t) => { const k = merchantKey(t.description); if (k) keysToLearn.add(k); });
+    const next = transactions.map((t) => {
+      if (selectedIds.has(t.id)) return { ...t, category: finalCategory };
+      if (finalCategory !== "Uncategorized" && (t.category === "Uncategorized" || !t.category) && keysToLearn.has(merchantKey(t.description))) {
+        return { ...t, category: finalCategory };
+      }
+      return t;
+    });
+    persist(next);
+    if (finalCategory !== "Uncategorized" && keysToLearn.size) {
+      const learned = { ...merchantCategories };
+      keysToLearn.forEach((k) => { learned[k] = finalCategory; });
+      persistMerchantCategories(learned);
+    }
+    clearSelection();
+  };
+
+  const bulkFlipSign = () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`Flip the charge/payment sign on ${selectedIds.size} selected transaction${selectedIds.size === 1 ? "" : "s"}?`)) return;
+    const next = transactions.map((t) => (selectedIds.has(t.id) ? { ...t, amount: -t.amount } : t));
+    persist(next);
+    clearSelection();
+  };
+
+  const bulkAddTags = (tags, projects) => {
+    if (!tags.length && !projects.length) return;
+    const next = transactions.map((t) => {
+      if (!selectedIds.has(t.id)) return t;
+      const mergedTags = Array.from(new Set([...(t.tags || []), ...tags]));
+      const mergedProjects = Array.from(new Set([...(t.projects || []), ...projects]));
+      return { ...t, tags: mergedTags, projects: mergedProjects };
+    });
+    persist(next);
+    clearSelection();
+  };
+
+  const saveCategoryRates = async (cardName, ratesObj) => {
+    const next = { ...rateOverrides, [cardName]: ratesObj };
+    setRateOverrides(next);
+    try { await storage.set(RATES_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
+  };
+
+  const flipCardSigns = (cardName) => {
+    if (!window.confirm(`Flip the charge/payment signs for all transactions on "${cardName}"? Use this if charges and payments look swapped for this card.`)) return;
+    const next = transactions.map((t) => ((t.card || "Unlabeled") === cardName ? { ...t, amount: -t.amount } : t));
+    persist(next);
+  };
+
+  const fixPaymentSigns = (cardName) => {
+    const isPaymentLike = (desc) => {
+      const d = (desc || "").toLowerCase();
+      return d.includes("payment") || d.includes("thank you");
+    };
+    const affected = transactions.filter((t) => (t.card || "Unlabeled") === cardName && isPaymentLike(t.description) && t.amount < 0);
+    if (affected.length === 0) {
+      window.alert(`No negative payment-looking rows found for "${cardName}" — nothing to fix.`);
+      return;
+    }
+    if (!window.confirm(`Found ${affected.length} row(s) on "${cardName}" that look like payments (contain "payment" or "thank you") but are currently negative. Flip just these to positive?`)) return;
+    const next = transactions.map((t) => (
+      (t.card || "Unlabeled") === cardName && isPaymentLike(t.description) && t.amount < 0
+        ? { ...t, amount: -t.amount }
+        : t
+    ));
+    persist(next);
+  };
+
+  const allCategories = useMemo(() => {
+    const set = new Set(transactions.map((t) => t.category || "Uncategorized"));
+    return Array.from(set).sort();
+  }, [transactions]);
+
+  const allCards = useMemo(() => {
+    const set = new Set(transactions.map((t) => t.card || "Unlabeled"));
+    return Array.from(set).sort();
+  }, [transactions]);
+
+  const allTags = useMemo(() => {
+    const set = new Set();
+    transactions.forEach((t) => (t.tags || []).forEach((tag) => set.add(tag)));
+    return Array.from(set).sort();
+  }, [transactions]);
+
+  const allProjects = useMemo(() => {
+    const set = new Set();
+    transactions.forEach((t) => (t.projects || []).forEach((p) => set.add(p)));
+    return Array.from(set).sort();
+  }, [transactions]);
+
+  const topMerchants = useMemo(() => {
+    const counts = {};
+    transactions.forEach((t) => {
+      const short = shortMerchantName(t.description);
+      counts[short] = (counts[short] || 0) + 1;
+    });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name]) => name);
+  }, [transactions]);
+
+  const filtered = useMemo(() => {
+    return transactions.filter((t) => {
+      const tDate = t.date || "";
+      const tDesc = t.description || "";
+      if (startDate && tDate < startDate) return false;
+      if (endDate && tDate > endDate) return false;
+      if (search && !tDesc.toLowerCase().includes(search.toLowerCase())) return false;
+      if (activeCategories.size && !activeCategories.has(t.category)) return false;
+      if (activeCards.size && !activeCards.has(t.card || "Unlabeled")) return false;
+      if (activeTags.size && !(t.tags || []).some((tag) => activeTags.has(tag))) return false;
+      if (activeProjects.size && !(t.projects || []).some((p) => activeProjects.has(p))) return false;
+      if (typeFilter === "income" && t.amount <= 0) return false;
+      if (typeFilter === "expense" && t.amount >= 0) return false;
+      return true;
+    });
+  }, [transactions, startDate, endDate, search, activeCategories, activeCards, activeTags, activeProjects, typeFilter]);
+
+  const summary = useMemo(() => {
+    let income = 0, expense = 0;
+    filtered.forEach((t) => { if (t.amount > 0) income += t.amount; else expense += -t.amount; });
+    return { income, expense, net: income - expense, count: filtered.length };
+  }, [filtered]);
+
+  const recurringCharges = useMemo(() => detectRecurring(filtered), [filtered]);
+
+  const categoryChartData = useMemo(() => {
+    const totals = {};
+    filtered.forEach((t) => {
+      if (t.amount >= 0) return;
+      const cat = t.category || "Uncategorized";
+      totals[cat] = (totals[cat] || 0) + -t.amount;
+    });
+    return Object.entries(totals).map(([category, total]) => ({ category, total })).sort((a, b) => b.total - a.total).slice(0, 8);
+  }, [filtered]);
+
+  const toggleCategory = (cat) => {
+    const next = new Set(activeCategories);
+    if (next.has(cat)) next.delete(cat); else next.add(cat);
+    setActiveCategories(next);
+  };
+  const toggleCard = (card) => {
+    const next = new Set(activeCards);
+    if (next.has(card)) next.delete(card); else next.add(card);
+    setActiveCards(next);
+  };
+  const toggleTag = (tag) => {
+    const next = new Set(activeTags);
+    if (next.has(tag)) next.delete(tag); else next.add(tag);
+    setActiveTags(next);
+  };
+  const toggleProject = (project) => {
+    const next = new Set(activeProjects);
+    if (next.has(project)) next.delete(project); else next.add(project);
+    setActiveProjects(next);
+  };
+  const clearFilters = () => {
+    setSearch(""); setStartDate(""); setEndDate("");
+    setActiveCategories(new Set()); setActiveCards(new Set()); setActiveTags(new Set()); setActiveProjects(new Set()); setTypeFilter("all");
+  };
+  const hasActiveFilters = search || startDate || endDate || activeCategories.size || activeCards.size || activeTags.size || activeProjects.size || typeFilter !== "all";
+
+  const clearDrilldownFilters = () => {
+    setActiveCategories(new Set());
+    setActiveCards(new Set());
+    setActiveProjects(new Set());
+    setActiveTags(new Set());
+    setTypeFilter("all");
+  };
+
+  const goToCategory = (category) => {
+    setPage("dashboard");
+    clearDrilldownFilters();
+    setActiveCategories(new Set([category]));
+    setShowFilters(true);
+    setShowMoreFilters(true);
+  };
+  const goToCard = (cardName) => {
+    setPage("dashboard");
+    clearDrilldownFilters();
+    setActiveCards(new Set([cardName]));
+    setShowFilters(true);
+    setShowMoreFilters(true);
+  };
+  const goToCategoryWithCard = (category, cardName) => {
+    setPage("dashboard");
+    clearDrilldownFilters();
+    setActiveCategories(new Set([category]));
+    if (cardName) setActiveCards(new Set([cardName]));
+    setShowFilters(true);
+    setShowMoreFilters(true);
+  };
+  const goToProject = (projectName) => {
+    setPage("dashboard");
+    clearDrilldownFilters();
+    setActiveProjects(new Set([projectName]));
+    setShowFilters(true);
+    setShowMoreFilters(true);
+  };
+  const goToType = (label) => {
+    setPage("dashboard");
+    clearDrilldownFilters();
+    setTypeFilter(label === "Charges" ? "expense" : "income");
+    setShowFilters(true);
+  };
+
+  const exportCSV = () => {
+    const header = "Date,Description,Amount,Category,Card,Tags,Projects\n";
+    const rows = filtered.map((t) => `${t.date},"${t.description.replace(/"/g, '""')}",${t.amount},${t.category},"${(t.card || "").replace(/"/g, '""')}","${(t.tags || []).join("; ")}","${(t.projects || []).join("; ")}"`).join("\n");
+    const blob = new Blob([header + rows], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "ledger-export.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const maxCategoryTotal = categoryChartData.length ? categoryChartData[0].total : 1;
+  const showInsights = loaded && transactions.length > 0 && page !== "summary";
+
+  const singleCardName = page === "dashboard" && activeCards.size === 1 ? Array.from(activeCards)[0] : null;
+
+  let insightsStat = null, insightsPrimaryDonut = null, insightsSecondaryDonut = null;
+  let headerStats = [];
+  if (page === "dashboard") {
+    const expensesInScope = filtered.filter((t) => t.amount < 0);
+    const avg = expensesInScope.length ? expensesInScope.reduce((s, t) => s + -t.amount, 0) / expensesInScope.length : 0;
+    insightsStat = expensesInScope.length > 0 ? { label: "Avg per charge", value: formatMoney(avg), sublabel: `across ${expensesInScope.length} charge${expensesInScope.length === 1 ? "" : "s"}` } : null;
+    insightsPrimaryDonut = { title: "Charges vs. payments", data: typeBreakdownData(filtered), onSegmentClick: goToType };
+    insightsSecondaryDonut = singleCardName
+      ? { title: `Spending by category — ${singleCardName}`, data: categoryBreakdownData(filtered, allCategories), onSegmentClick: (category) => goToCategoryWithCard(category, singleCardName) }
+      : { title: "Spending by card", data: cardBreakdownData(filtered), onSegmentClick: goToCard };
+    headerStats = [
+      { icon: <I.Down size={16} />, label: "Charges", value: formatMoney(summary.expense), accent: "#E38A73", big: true, onClick: () => goToType("Charges") },
+      { icon: <I.Up size={16} />, label: "Payments & credits", value: formatMoney(summary.income), accent: "#6FCFAE", onClick: () => goToType("Payments & credits") },
+      { icon: <I.Wallet size={16} />, label: "Net change", value: formatMoney(summary.net), accent: summary.net >= 0 ? "#6FCFAE" : "#E38A73" },
+      { icon: <I.Tag size={16} />, label: "Transactions", value: summary.count.toLocaleString(), accent: "#C98A3E" },
+    ];
+  } else if (page === "summary") {
+    const expensesAll = transactions.filter((t) => t.amount < 0);
+    const incomeAll = transactions.filter((t) => t.amount > 0);
+    const totalChargesAll = expensesAll.reduce((s, t) => s + -t.amount, 0);
+    const totalPaymentsAll = incomeAll.reduce((s, t) => s + t.amount, 0);
+    headerStats = [
+      { icon: <I.Down size={16} />, label: "Total charges", value: formatMoney(totalChargesAll), accent: "#E38A73", big: true, onClick: () => goToType("Charges") },
+      { icon: <I.Up size={16} />, label: "Total payments & credits", value: formatMoney(totalPaymentsAll), accent: "#6FCFAE", onClick: () => goToType("Payments & credits") },
+      { icon: <I.Wallet size={16} />, label: "Net change", value: formatMoney(totalPaymentsAll - totalChargesAll), accent: totalPaymentsAll - totalChargesAll >= 0 ? "#6FCFAE" : "#E38A73" },
+      { icon: <I.Tag size={16} />, label: "All-time transactions", value: transactions.length.toLocaleString(), accent: "#C98A3E", onClick: () => setPage("dashboard") },
+    ];
+  } else if (page === "cards") {
+    const expensesAll = transactions.filter((t) => t.amount < 0);
+    const total = expensesAll.reduce((s, t) => s + -t.amount, 0);
+    const totalPaymentsAll = transactions.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    const cardCount = new Set(transactions.map((t) => t.card || "Unlabeled")).size;
+    const cardTotals = {};
+    expensesAll.forEach((t) => { const c = t.card || "Unlabeled"; cardTotals[c] = (cardTotals[c] || 0) + -t.amount; });
+    const cardEntries = Object.entries(cardTotals).sort((a, b) => b[1] - a[1]);
+    const topCard = cardEntries[0];
+    const scopeTxns = cardsPageSelected ? transactions.filter((t) => (t.card || "Unlabeled") === cardsPageSelected) : transactions;
+    const scopeCharges = scopeTxns.filter((t) => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+    insightsStat = scopeCharges > 0 ? { label: "Total charged", value: formatMoney(scopeCharges), sublabel: cardsPageSelected || `across ${cardCount} card${cardCount === 1 ? "" : "s"}` } : null;
+    insightsPrimaryDonut = {
+      title: cardsPageSelected ? `Spending by category — ${cardsPageSelected}` : "Spending by category",
+      data: categoryBreakdownData(scopeTxns, allCategories),
+      onSegmentClick: (category) => goToCategoryWithCard(category, cardsPageSelected),
+    };
+    headerStats = [
+      { icon: <I.Card size={16} />, label: "Cards", value: String(cardCount), accent: "#C98A3E", onClick: () => setCardsPageSelected(null) },
+      { icon: <I.Down size={16} />, label: "Total charged", value: formatMoney(total), accent: "#E38A73", big: true, onClick: () => goToType("Charges") },
+      { icon: <I.Up size={16} />, label: "Total payments", value: formatMoney(totalPaymentsAll), accent: "#6FCFAE", onClick: () => goToType("Payments & credits") },
+      { icon: <I.Star size={16} />, label: "Top card", value: topCard ? topCard[0] : "—", accent: "#3F5A73", sublabel: topCard ? formatMoney(topCard[1]) : undefined, onClick: topCard ? () => setCardsPageSelected(topCard[0]) : undefined },
+    ];
+  } else if (page === "projects") {
+    const projTotals = {};
+    transactions.forEach((t) => (t.projects || []).forEach((p) => { if (t.amount < 0) projTotals[p] = (projTotals[p] || 0) + -t.amount; }));
+    const projEntries = Object.entries(projTotals).sort((a, b) => b[1] - a[1]);
+    const projNames = projEntries.map(([n]) => n);
+    const projTotal = projEntries.reduce((s, [, v]) => s + v, 0);
+    const topProject = projEntries[0];
+    insightsStat = { label: "Total across projects", value: formatMoney(projTotal), sublabel: `${projNames.length} project${projNames.length === 1 ? "" : "s"}` };
+    insightsPrimaryDonut = { title: "Spending by project", data: projectBreakdownData(transactions), onSegmentClick: goToProject };
+    headerStats = [
+      { icon: <I.Folder size={16} />, label: "Projects", value: String(projEntries.length), accent: "#C98A3E" },
+      { icon: <I.Down size={16} />, label: "Total spent", value: formatMoney(projTotal), accent: "#E38A73", big: true, onClick: () => goToType("Charges") },
+      { icon: <I.Star size={16} />, label: "Largest project", value: topProject ? topProject[0] : "—", accent: "#3F5A73", sublabel: topProject ? formatMoney(topProject[1]) : undefined, onClick: topProject ? () => goToProject(topProject[0]) : undefined },
+      { icon: <I.Wallet size={16} />, label: "Avg per project", value: formatMoney(projEntries.length ? projTotal / projEntries.length : 0), accent: "#6FCFAE" },
+    ];
+  } else if (page === "rewards") {
+    const map = {};
+    transactions.forEach((t) => {
+      const name = t.card || "Unlabeled";
+      if (!map[name]) map[name] = { name, catalogId: t.cardCatalogId || null, txns: [] };
+      map[name].txns.push(t);
+    });
+    const perCard = [];
+    let totalRewardValue = 0;
+    Object.values(map).forEach((g) => {
+      const catalogCard = CARD_CATALOG.find((c) => c.id === g.catalogId);
+      const result = estimateCardRewards(g.txns, catalogCard, rateOverrides[g.name]);
+      totalRewardValue += result.dollarValue;
+      perCard.push({ name: g.name, value: Math.max(0, result.dollarValue) });
+    });
+    perCard.sort((a, b) => b.value - a.value);
+    const topRewardCards = perCard.slice(0, 6);
+    const otherRewardSum = perCard.slice(6).reduce((s, e) => s + e.value, 0);
+    const rewardDonutData = topRewardCards.map((e, i) => ({ label: e.name, value: e.value, color: CATEGORY_PALETTE[i % CATEGORY_PALETTE.length] }));
+    if (otherRewardSum > 0) rewardDonutData.push({ label: "Other", value: otherRewardSum, color: "#B0A99A" });
+    const bestCard = perCard[0];
+    const totalChargesAnalyzed = transactions.filter((t) => t.amount < 0).reduce((s, t) => s + -t.amount, 0);
+    insightsStat = { label: "Total estimated rewards", value: formatMoney(totalRewardValue), sublabel: `across ${perCard.length} card${perCard.length === 1 ? "" : "s"}` };
+    insightsPrimaryDonut = { title: "Estimated rewards by card", data: rewardDonutData, onSegmentClick: goToCard };
+    headerStats = [
+      { icon: <I.Star size={16} />, label: "Est. total rewards", value: formatMoney(totalRewardValue), accent: "#2F6F5E", big: true },
+      { icon: <I.Card size={16} />, label: "Cards tracked", value: String(perCard.length), accent: "#C98A3E", onClick: () => setPage("cards") },
+      { icon: <I.Wallet size={16} />, label: "Best card", value: bestCard ? bestCard.name : "—", accent: "#3F5A73", sublabel: bestCard ? formatMoney(bestCard.value) : undefined, onClick: bestCard ? () => goToCard(bestCard.name) : undefined },
+      { icon: <I.Down size={16} />, label: "Charges analyzed", value: formatMoney(totalChargesAnalyzed), accent: "#E38A73", onClick: () => goToType("Charges") },
+    ];
+  }
+
+  const tableProps = {
+    allCategories, editingCatId, setEditingCatId, updateCategory, deleteTransaction,
+    editingTagsId, setEditingTagsId, updateTags, selectedIds, toggleSelect, toggleSelectAll,
+  };
+
+  return (
+    <div style={{ display: "flex", background: "#EDEBE3", minHeight: "100vh" }}>
+      <Sidebar page={page} setPage={setPage} />
+      <div className="app-main" style={{ flex: 1, minWidth: 0, fontFamily: "'Inter', sans-serif", color: "#22303F" }}>
+        <div style={{ background: "#22303F", color: "#EDEBE3", padding: "36px 28px 28px" }}>
+          <div style={{ maxWidth: 1400, margin: "0 auto" }}>
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <div className="mono" style={{ fontSize: 11, letterSpacing: 2, color: "#C98A3E", marginBottom: 6 }}>PRIVATE · STORED ONLY IN THIS BROWSER</div>
+                <h1 className="serif" style={{ fontSize: 34, margin: 0, fontWeight: 700 }}>The Ledger</h1>
+                <p style={{ margin: "6px 0 0", color: "#B9C2C9", fontSize: 14 }}>Your transactions, uploaded, sorted, and searched — kept to yourself.</p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {importing && (
+                  <button onClick={cancelImport} className="chip" style={{ background: "transparent", borderColor: "rgba(255,255,255,0.3)", color: "#EDEBE3" }}>
+                    <I.X size={12} /> Cancel upload
+                  </button>
+                )}
+                <label style={{ display: "flex", alignItems: "center", gap: 8, background: "#C98A3E", color: "#22303F", padding: "10px 18px", borderRadius: 8, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>
+                  {importing ? <span className="spin"><I.Repeat size={16} /></span> : <I.Upload size={16} />}
+                  {importing ? "Importing…" : "Upload statement"}
+                  <input ref={fileInputRef} type="file" accept=".csv,.pdf" multiple style={{ display: "none" }} onChange={(e) => { importFiles(e.target.files); e.target.value = ""; }} />
+                </label>
+              </div>
+            </div>
+
+            {importMsg && (
+              <div style={{
+                marginTop: 14, padding: "8px 12px", borderRadius: 6, fontSize: 13, display: "flex", alignItems: "center", gap: 8,
+                background: importMsg.type === "error" ? "#4a2a24" : "#25423a", color: importMsg.type === "error" ? "#f0b8ab" : "#bfe3d4",
+              }}>
+                {importMsg.type === "error" ? <I.Alert size={14} /> : <I.Check size={14} />}
+                {importMsg.text}
+                <button onClick={() => setImportMsg(null)} style={{ marginLeft: "auto", background: "none", border: "none", color: "inherit", cursor: "pointer" }}><I.X size={13} /></button>
+              </div>
+            )}
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginTop: 22 }}>
+              {headerStats.map((s, i) => <SummaryCard key={s.label + i} {...s} />)}
+            </div>
+          </div>
+        </div>
+        <div className="perforation" />
+
+        <div className="content-row" style={{ maxWidth: 1400, margin: "0 auto", padding: "24px 28px 60px", display: "flex", gap: 24 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            {selectedIds.size > 0 && (
+              <BulkActionBar count={selectedIds.size} categories={allCategories} allTags={allTags} onApply={bulkSetCategory} onAddTags={bulkAddTags} onFlipSign={bulkFlipSign} onClear={clearSelection} />
+            )}
+            {!loaded ? (
+              <div style={{ padding: 40, textAlign: "center", color: "#7A7365" }}>Loading your ledger…</div>
+            ) : page === "summary" ? (
+              <SummaryPage transactions={transactions} allCategories={allCategories} rateOverrides={rateOverrides} goToCategory={goToCategory} goToCard={goToCard} goToProject={goToProject} setPage={setPage} />
+            ) : transactions.length === 0 && page === "dashboard" ? (
+              <EmptyState onUpload={() => fileInputRef.current && fileInputRef.current.click()} />
+            ) : page === "cards" ? (
+              <CardsPage transactions={transactions} {...tableProps} flipCardSigns={flipCardSigns} fixPaymentSigns={fixPaymentSigns} selected={cardsPageSelected} setSelected={setCardsPageSelected} />
+            ) : page === "projects" ? (
+              <ProjectsPage transactions={transactions} {...tableProps} />
+            ) : page === "rewards" ? (
+              <RewardsPage transactions={transactions} {...tableProps} rateOverrides={rateOverrides} saveCategoryRates={saveCategoryRates} />
+            ) : (
+              <React.Fragment>
+                <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+                  <div style={{ position: "relative", flex: "1 1 260px" }}>
+                    <span style={{ position: "absolute", left: 10, top: 9, color: "#7A7365" }}><I.Search size={15} /></span>
+                    <input className="ledger-input" style={{ paddingLeft: 32 }} placeholder="Search by store or description…" value={search} onChange={(e) => setSearch(e.target.value)} />
+                  </div>
+                  <button onClick={() => setShowFilters((s) => !s)} className="chip" style={{ padding: "8px 14px" }}>
+                    <I.Filter size={13} /> Filters {hasActiveFilters && `(${[startDate, endDate].filter(Boolean).length + activeCategories.size + activeCards.size + activeTags.size + activeProjects.size + (typeFilter !== "all" ? 1 : 0)})`}
+                    <span style={{ transform: showFilters ? "rotate(180deg)" : "none", transition: "transform 0.15s", display: "inline-block" }}><I.Chevron size={13} /></span>
+                  </button>
+                  <button onClick={exportCSV} className="chip" style={{ padding: "8px 14px" }}><I.Download size={13} /> Export</button>
+                  <div style={{ marginLeft: "auto", paddingLeft: 14, borderLeft: "1px solid #C9C2B2" }}>
+                    <button onClick={clearAll} className="chip" style={{ padding: "8px 14px", color: "#A6432F" }}><I.Trash size={13} /> Delete all data</button>
+                  </div>
+                </div>
+
+                {showFilters && (
+                  <div style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 10, padding: 18, marginBottom: 18 }}>
+                    <Field label="Date range">
+                      <DateRangeControl startDate={startDate} endDate={endDate} onChange={(s, e) => { setStartDate(s); setEndDate(e); }} />
+                    </Field>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginTop: 16 }}>
+                      <Field label="Type">
+                        <select className="ledger-input" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                          <option value="all">All</option>
+                          <option value="expense">Charges</option>
+                          <option value="income">Payments & credits</option>
+                        </select>
+                      </Field>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#B0A99A", marginTop: 8 }}>Tip: click any column header in the table below to sort by it.</div>
+
+                    <div style={{ marginTop: 16 }}>
+                      <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 6, letterSpacing: 0.5 }}>QUICK PICKS</div>
+                      <QuickPicks
+                        auto={topMerchants} pinned={quickPickPinned} hidden={quickPickHidden}
+                        search={search} setSearch={setSearch}
+                        onAdd={addQuickPick} onRemoveAuto={removeAutoQuickPick} onRemovePinned={removePinnedQuickPick}
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => setShowMoreFilters((s) => !s)}
+                      style={{ marginTop: 16, background: "none", border: "none", color: "#3F5A73", fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, padding: 0 }}
+                    >
+                      More filters (Cards, Tags, Categories)
+                      <span style={{ transform: showMoreFilters ? "rotate(180deg)" : "none", display: "inline-block", transition: "transform 0.15s" }}><I.Chevron size={11} /></span>
+                    </button>
+
+                    {showMoreFilters && (
+                      <React.Fragment>
+                        {allCards.length > 0 && (
+                          <div style={{ marginTop: 16 }}>
+                            <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 6, letterSpacing: 0.5 }}>CARDS</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {allCards.map((c) => (<button key={c} onClick={() => toggleCard(c)} className={`chip ${activeCards.has(c) ? "active" : ""}`}><I.Card size={11} /> {c}</button>))}
+                            </div>
+                          </div>
+                        )}
+
+                        {allTags.length > 0 && (
+                          <div style={{ marginTop: 16 }}>
+                            <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 6, letterSpacing: 0.5 }}>TAGS</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {allTags.map((tag) => (<button key={tag} onClick={() => toggleTag(tag)} className={`chip ${activeTags.has(tag) ? "active" : ""}`}>{tag}</button>))}
+                            </div>
+                          </div>
+                        )}
+
+                        {allProjects.length > 0 && (
+                          <div style={{ marginTop: 16 }}>
+                            <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 6, letterSpacing: 0.5 }}>PROJECTS</div>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {allProjects.map((p) => (<button key={p} onClick={() => toggleProject(p)} className={`chip ${activeProjects.has(p) ? "active" : ""}`}><I.Folder size={11} /> {p}</button>))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div style={{ marginTop: 16 }}>
+                          <div style={{ fontSize: 11, color: "#7A7365", marginBottom: 6, letterSpacing: 0.5 }}>CATEGORIES</div>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {allCategories.map((c) => (<button key={c} onClick={() => toggleCategory(c)} className={`chip ${activeCategories.has(c) ? "active" : ""}`}>{c}</button>))}
+                          </div>
+                        </div>
+                      </React.Fragment>
+                    )}
+
+                    {hasActiveFilters && (
+                      <button onClick={clearFilters} style={{ marginTop: 14, background: "none", border: "none", color: "#A6432F", fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+                        <I.X size={12} /> Clear all filters
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {categoryChartData.length > 0 && (
+                  <div style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 10, padding: 18, marginBottom: 18 }}>
+                    <div className="serif" style={{ fontSize: 15, marginBottom: 12, fontWeight: 700 }}>Spending by category</div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {categoryChartData.map((d) => (
+                        <div key={d.category} style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px", alignItems: "center", gap: 10 }}>
+                          <div style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.category}</div>
+                          <div style={{ background: "#E3DFD2", borderRadius: 4, height: 14, overflow: "hidden" }}>
+                            <div style={{ width: `${Math.max(4, (d.total / maxCategoryTotal) * 100)}%`, height: "100%", background: categoryColor(d.category, allCategories), borderRadius: 4 }} />
+                          </div>
+                          <div className="mono" style={{ fontSize: 12, textAlign: "right", fontWeight: 600 }}>{formatMoney(d.total)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {recurringCharges.length > 0 && (
+                  <div style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 10, padding: 18, marginBottom: 18 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+                      <div className="serif" style={{ fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}><I.Repeat size={15} /> Recurring charges</div>
+                      <div className="mono" style={{ fontSize: 12, color: "#7A7365" }}>
+                        Est. {formatMoney(recurringCharges.reduce((s, r) => s + (r.frequency === "Monthly" ? r.avgAmount : r.estAnnual / 12), 0))} / month
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                      {recurringCharges.map((r) => (
+                        <div key={r.key} onClick={() => { setSearch(r.description); setShowFilters(false); }} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#FFFFFF", border: "1px solid #E3DFD2", borderRadius: 8, padding: "10px 14px", cursor: "pointer", gap: 10, flexWrap: "wrap" }}>
+                          <div style={{ minWidth: 180 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600 }}>{r.description}</div>
+                            <div style={{ fontSize: 11, color: "#7A7365", marginTop: 2 }}>{r.frequency} · seen {r.count}× · last {formatDateDisplay(r.lastDate)}{r.card ? ` · ${r.card}` : ""}</div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                            <span className="mono" style={{ fontSize: 14, fontWeight: 600, color: "#A6432F" }}>{formatMoney(r.avgAmount)} <span style={{ fontWeight: 400, color: "#7A7365", fontSize: 11 }}>/ {r.frequency.toLowerCase().replace("ly", "")}</span></span>
+                            <span className="mono" style={{ fontSize: 11, color: "#7A7365" }}>≈{formatMoney(r.estAnnual)}/yr</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <TransactionTable transactions={filtered} {...tableProps} showCard />
+                <div style={{ fontSize: 11, color: "#7A7365", marginTop: 10, textAlign: "center" }}>
+                  Showing {filtered.length} of {transactions.length} transactions · stored only in this browser, never uploaded anywhere
+                </div>
+              </React.Fragment>
+            )}
+          </div>
+
+          {showInsights && <InsightsPanel stat={insightsStat} primaryDonut={insightsPrimaryDonut} secondaryDonut={insightsSecondaryDonut} />}
+        </div>
+      </div>
+
+      {cardPickerRequest && (
+        <CardPickerModal
+          fileName={cardPickerRequest.fileName}
+          onPick={(c) => { cardPickerRequest.resolve({ name: c.name, catalogId: c.id }); setCardPickerRequest(null); }}
+          onCustom={(name) => { cardPickerRequest.resolve({ name, catalogId: null }); setCardPickerRequest(null); }}
+          onSkip={() => { cardPickerRequest.resolve(null); setCardPickerRequest(null); }}
+        />
+      )}
+
+      {duplicateReview && (
+        <DuplicateReviewModal
+          dupItems={duplicateReview.dupItems}
+          onConfirm={(kept) => { duplicateReview.resolve(kept); setDuplicateReview(null); }}
+          onCancel={() => { duplicateReview.resolve(null); setDuplicateReview(null); }}
+        />
+      )}
+
+      {showBackToTop && (
+        <button
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+          title="Back to top"
+          className="back-to-top-btn"
+          style={{
+            position: "fixed", bottom: 24, right: 24, width: 46, height: 46, borderRadius: "50%",
+            background: "#22303F", color: "#EDEBE3", border: "none", cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18,
+            boxShadow: "0 4px 14px rgba(0,0,0,0.28)", zIndex: 500,
+          }}
+        >
+          <I.Up size={18} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("Ledger crashed:", error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 40, maxWidth: 640, margin: "0 auto", fontFamily: "sans-serif" }}>
+          <h2 style={{ color: "#A6432F" }}>Something went wrong</h2>
+          <p style={{ color: "#22303F" }}>
+            The app hit an error and stopped rendering instead of quietly going blank. Your data in this browser's storage
+            is untouched. Please copy the message below and share it so this can be fixed.
+          </p>
+          <pre style={{ background: "#F6F4EE", border: "1px solid #C9C2B2", borderRadius: 8, padding: 14, fontSize: 12, whiteSpace: "pre-wrap", overflowX: "auto" }}>
+            {String(this.state.error && this.state.error.stack || this.state.error)}
+          </pre>
+          <button
+            onClick={() => this.setState({ error: null })}
+            style={{ marginTop: 14, background: "#22303F", color: "#EDEBE3", border: "none", borderRadius: 8, padding: "10px 20px", fontWeight: 600, cursor: "pointer" }}
+          >Try to continue</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+root.render(<ErrorBoundary><LedgerApp /></ErrorBoundary>);
+</script>
+</body>
+</html>
